@@ -1,0 +1,81 @@
+{
+  "entities": {
+    "App": {
+      "title": "App",
+      "description": "A user-created application flow.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the app." },
+        "ownerId": { "type": "string", "description": "The UID of the user who owns the app." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the app was created." },
+        "platform": { "type": "string", "enum": ["iOS", "Android", "Web"], "description": "The target platform." },
+        "status": { "type": "string", "enum": ["Draft", "Published"], "description": "The publication status." },
+        "version": { "type": "string", "description": "The version of the app." }
+      },
+      "required": ["name", "ownerId", "createdAt", "platform", "status"]
+    },
+    "Screen": {
+      "title": "Screen",
+      "description": "A screen image within an app flow.",
+      "type": "object",
+      "properties": {
+        "appId": { "type": "string", "description": "The ID of the parent app." },
+        "imageUrl": { "type": "string", "description": "The URL of the screen image." },
+        "order": { "type": "integer", "description": "The display order in the flow." },
+        "name": { "type": "string", "description": "The name of the screen." }
+      },
+      "required": ["appId", "imageUrl", "order", "name"]
+    },
+    "Hotspot": {
+      "title": "Hotspot",
+      "description": "A clickable area on a screen that navigates to another screen.",
+      "type": "object",
+      "properties": {
+        "screenId": { "type": "string", "description": "The ID of the screen this hotspot belongs to." },
+        "targetScreenId": { "type": "string", "description": "The ID of the destination screen." },
+        "x": { "type": "number", "description": "The X coordinate (percentage)." },
+        "y": { "type": "number", "description": "The Y coordinate (percentage)." },
+        "width": { "type": "number", "description": "The width (percentage)." },
+        "height": { "type": "number", "description": "The height (percentage)." },
+        "label": { "type": "string", "description": "A label for the hotspot." }
+      },
+      "required": ["screenId", "targetScreenId", "x", "y", "width", "height"]
+    },
+    "Issue": {
+      "title": "Issue",
+      "description": "A feedback item or bug report on a specific screen.",
+      "type": "object",
+      "properties": {
+        "appId": { "type": "string", "description": "The ID of the parent app." },
+        "screenId": { "type": "string", "description": "The ID of the screen this issue belongs to." },
+        "authorId": { "type": "string", "description": "The UID of the user who reported the issue." },
+        "authorName": { "type": "string", "description": "The name of the reporter." },
+        "text": { "type": "string", "description": "The feedback text." },
+        "x": { "type": "number", "description": "The X coordinate of the feedback marker." },
+        "y": { "type": "number", "description": "The Y coordinate of the feedback marker." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the issue was reported." },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High"], "description": "The priority level." },
+        "status": { "type": "string", "enum": ["Open", "Resolved"], "description": "The issue status." }
+      },
+      "required": ["appId", "screenId", "authorId", "authorName", "text", "x", "y", "createdAt", "priority", "status"]
+    }
+  },
+  "firestore": {
+    "/apps/{appId}": {
+      "schema": "App",
+      "description": "Collection of applications."
+    },
+    "/apps/{appId}/screens/{screenId}": {
+      "schema": "Screen",
+      "description": "Subcollection of screens for an app."
+    },
+    "/apps/{appId}/screens/{screenId}/hotspots/{hotspotId}": {
+      "schema": "Hotspot",
+      "description": "Subcollection of hotspots for a screen."
+    },
+    "/apps/{appId}/issues/{issueId}": {
+      "schema": "Issue",
+      "description": "Subcollection of issues for an app."
+    }
+  }
+}

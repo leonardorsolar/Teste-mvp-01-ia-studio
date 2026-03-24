@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: apps
+    // Document ID: appId
+    // Fields:
+    //   - name: string (required)
+    //   - ownerId: string (required) - UID of the owner
+    //   - createdAt: timestamp (required)
+    //   - platform: string (required, enum: iOS, Android, Web)
+    //   - status: string (required, enum: Draft, Published)
+    //   - version: string (optional)
+    //
+    // Collection: apps/{appId}/screens
+    // Document ID: screenId
+    // Fields:
+    //   - appId: string (required)
+    //   - imageUrl: string (required)
+    //   - order: number (required)
+    //   - name: string (required)
+    //
+    // Collection: apps/{appId}/screens/{screenId}/hotspots
+    // Document ID: hotspotId
+    // Fields:
+    //   - screenId: string (required)
+    //   - targetScreenId: string (required)
+    //   - x: number (required)
+    //   - y: number (required)
+    //   - width: number (required)
+    //   - height: number (required)
+    //   - label: string (optional)
+    //
+    // Collection: apps/{appId}/issues
+    // Document ID: issueId
+    // Fields:
+    //   - appId: string (required)
+    //   - screenId: string (required)
+    //   - authorId: string (required)
+    //   - authorName: string (required)
+    //   - text: string (required)
+    //   - x: number (required)
+    //   - y: number (required)
+    //   - createdAt: timestamp (required)
+    //   - priority: string (required, enum: Low, Medium, High)
+    //   - status: string (required, enum: Open, Resolved)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAppOwner(appId) {
+      return isAuthenticated() && get(/databases/$(database)/documents/apps/$(appId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidApp(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.ownerId is string && data.ownerId == request.auth.uid &&
+             data.platform in ['iOS', 'Android', 'Web'] &&
+             data.status in ['Draft', 'Published'];
+    }
+
+    function isValidScreen(data) {
+      return data.appId is string &&
+             data.imageUrl is string && data.imageUrl.size() < 2048 &&
+             data.order is number &&
+             data.name is string && data.name.size() < 100 &&
+             data.deviceType in ['Mobile', 'Desktop'];
+    }
+
+    function isValidHotspot(data) {
+      return data.screenId is string &&
+             data.targetScreenId is string &&
+             data.x is number && data.x >= 0 && data.x <= 100 &&
+             data.y is number && data.y >= 0 && data.y <= 100 &&
+             data.width is number && data.width > 0 && data.width <= 100 &&
+             data.height is number && data.height > 0 && data.height <= 100;
+    }
+
+    function isValidIssue(data) {
+      return data.appId is string &&
+             data.screenId is string &&
+             data.authorId is string && data.authorId == request.auth.uid &&
+             data.authorName is string && data.authorName.size() < 100 &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 2000 &&
+             data.x is number && data.y is number &&
+             data.priority in ['Low', 'Medium', 'High'] &&
+             data.status in ['Open', 'Resolved'];
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "leonardorsolar@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /apps/{appId} {
+      allow read: if isAuthenticated(); // Anyone authenticated can view apps (for shared links)
+      allow create: if isAuthenticated() && isValidApp(request.resource.data);
+      allow update: if isOwner(resource.data.ownerId) && isValidApp(request.resource.data);
+      allow delete: if isOwner(resource.data.ownerId);
+
+      match /screens/{screenId} {
+        allow read: if isAuthenticated();
+        allow create: if isAppOwner(appId) && isValidScreen(request.resource.data);
+        allow update: if isAppOwner(appId) && isValidScreen(request.resource.data);
+        allow delete: if isAppOwner(appId);
+
+        match /hotspots/{hotspotId} {
+          allow read: if isAuthenticated();
+          allow create: if isAppOwner(appId) && isValidHotspot(request.resource.data);
+          allow update: if isAppOwner(appId) && isValidHotspot(request.resource.data);
+          allow delete: if isAppOwner(appId);
+        }
+      }
+
+      match /issues/{issueId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidIssue(request.resource.data);
+        allow update: if (isOwner(resource.data.authorId) || isAppOwner(appId)) && isValidIssue(request.resource.data);
+        allow delete: if isOwner(resource.data.authorId) || isAppOwner(appId);
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && request.resource.data.role == 'user';
+      allow update: if isOwner(userId) && request.resource.data.role == resource.data.role;
+      allow delete: if isAdmin();
+    }
+  }
+}

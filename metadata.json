@@ -1,0 +1,5 @@
+{
+  "name": "AppMapper Pro",
+  "description": "Visualize and prototype app flows with interactive hotspots and feedback collection. Powered by a robust NestJS backend.",
+  "requestFramePermissions": []
+}

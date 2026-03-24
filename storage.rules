@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /screens/{allPaths=**} {
+      allow read: if true; // Permite leitura pública para visualização das telas
+      allow write: if request.auth != null; // Apenas usuários logados podem subir telas
+    }
+  }
+}
