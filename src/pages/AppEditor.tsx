@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError, storage, ref, uploadBytes, getDownloadURL } from '../firebase';
+import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData } from '../types';
 import { 
   ArrowLeft, 
@@ -26,19 +26,12 @@ import NewScreenModal from '../components/NewScreenModal';
 export default function AppEditor() {
   const { appId } = useParams();
   const navigate = useNavigate();
-  
-  useEffect(() => {
-    console.log('👤 Estado de autenticação:', { 
-      uid: auth.currentUser?.uid, 
-      email: auth.currentUser?.email,
-      isAuthReady: !!auth.currentUser 
-    });
-  }, []);
-
   const [app, setApp] = useState<AppData | null>(null);
   const [screens, setScreens] = useState<ScreenData[]>([]);
   const [activeScreenId, setActiveScreenId] = useState<string | null>(null);
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
+  const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
   const [isCreatingApp, setIsCreatingApp] = useState(appId === 'new');
   const [newAppName, setNewAppName] = useState('');
   const [newAppPlatform, setNewAppPlatform] = useState<'iOS' | 'Android' | 'Web'>('iOS');
@@ -53,74 +46,74 @@ export default function AppEditor() {
   const [popoverPos, setPopoverPos] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      console.log('👤 AppEditor Auth State Changed:', { uid: user?.uid });
-      if (!user) return;
+    if (appId && appId !== 'new') {
+      const unsubscribeApp = onSnapshot(doc(db, 'apps', appId), (doc) => {
+        if (doc.exists()) {
+          setApp({ id: doc.id, ...doc.data() } as AppData);
+        }
+      });
 
-      if (appId && appId !== 'new') {
-        const unsubscribeApp = onSnapshot(doc(db, 'apps', appId), (doc) => {
-          if (doc.exists()) {
-            setApp({ id: doc.id, ...doc.data() } as AppData);
-          }
-        });
+      const qScreens = query(collection(db, `apps/${appId}/screens`));
+      const unsubscribeScreens = onSnapshot(qScreens, (snapshot) => {
+        const screensData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as ScreenData[];
+        setScreens(screensData.sort((a, b) => (a.order || 0) - (b.order || 0)));
+        if (screensData.length > 0 && !activeScreenId) {
+          setActiveScreenId(screensData[0].id);
+        }
+      });
 
-        const qScreens = query(collection(db, `apps/${appId}/screens`));
-        const unsubscribeScreens = onSnapshot(qScreens, (snapshot) => {
-          const screensData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as ScreenData[];
-          setScreens(screensData.sort((a, b) => a.order - b.order));
-          if (screensData.length > 0 && !activeScreenId) {
-            setActiveScreenId(screensData[0].id);
-          }
-        });
-
-        return () => {
-          unsubscribeApp();
-          unsubscribeScreens();
-        };
-      }
-    });
-
-    return () => unsubscribeAuth();
+      return () => {
+        unsubscribeApp();
+        unsubscribeScreens();
+      };
+    }
   }, [appId]);
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) return;
-
-      if (appId && appId !== 'new' && activeScreenId) {
-        const qHotspots = query(collection(db, `apps/${appId}/screens/${activeScreenId}/hotspots`));
-        const unsubscribeHotspots = onSnapshot(qHotspots, (snapshot) => {
-          const hotspotsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as HotspotData[];
-          setHotspots(hotspotsData);
-        });
-        return () => unsubscribeHotspots();
-      }
-    });
-
-    return () => unsubscribeAuth();
+    if (appId && activeScreenId) {
+      const qHotspots = query(collection(db, `apps/${appId}/screens/${activeScreenId}/hotspots`));
+      const unsubscribeHotspots = onSnapshot(qHotspots, (snapshot) => {
+        const hotspotsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as HotspotData[];
+        setHotspots(hotspotsData);
+      });
+      return () => unsubscribeHotspots();
+    }
   }, [appId, activeScreenId]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsDrawingMode(false);
+        setIsDrawing(false);
+        setCurrentHotspot(null);
+        setShowHotspotPopover(false);
+        setPendingHotspot(null);
+        setSelectedHotspotId(null);
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedHotspotId && !showHotspotPopover) {
+          handleDeleteHotspot(selectedHotspotId);
+          setSelectedHotspotId(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedHotspotId, showHotspotPopover]);
+
   const handleCreateApp = async () => {
-    console.log('🚀 Iniciando criação de app...', { newAppName, user: auth.currentUser?.uid });
-    if (!newAppName || !auth.currentUser) {
-      console.warn('⚠️ Nome do app ou usuário ausente');
-      return;
-    }
+    if (!newAppName || !auth.currentUser) return;
     try {
-      const appData = {
+      const appRef = await addDoc(collection(db, 'apps'), {
         name: newAppName,
         ownerId: auth.currentUser.uid,
         createdAt: serverTimestamp(),
         platform: newAppPlatform,
         status: 'Draft',
         version: 'v1.0.0'
-      };
-      console.log('📝 Dados do app:', appData);
-      const appRef = await addDoc(collection(db, 'apps'), appData);
-      console.log('✅ App criado com ID:', appRef.id);
+      });
       navigate(`/apps/${appRef.id}/edit`);
     } catch (error) {
-      console.error('❌ Erro ao criar app:', error);
       handleFirestoreError(error, OperationType.CREATE, 'apps');
     }
   };
@@ -129,56 +122,46 @@ export default function AppEditor() {
     setIsNewScreenModalOpen(true);
   };
 
-  const handleSaveNewScreen = async (screenData: { name: string; deviceType: 'Mobile' | 'Desktop'; file: File }) => {
-    if (!appId || appId === 'new') return;
+  const handleSaveNewScreen = (screenData: { name: string; device: 'mobile' | 'desktop'; imageUrl: string }) => {
+    // 1. Estrutura de dados — objeto com id, name, device e imageUrl (base64)
+    const newScreen: ScreenData = {
+      id: Date.now().toString(),
+      appId: appId || 'local',
+      name: screenData.name,
+      device: screenData.device,
+      imageUrl: screenData.imageUrl,
+      order: screens.length
+    };
     
-    console.log('🚀 Iniciando upload...', { appId, fileName: screenData.file?.name, fileSize: screenData.file?.size });
-
-    try {
-      // 1. Upload para o Firebase Storage
-      const filename = `${Date.now()}_${screenData.file.name}`;
-      const storageRef = ref(storage, `apps/${appId}/screens/${filename}`);
-      console.log('📦 StorageRef criado:', storageRef.fullPath);
-
-      const uploadResult = await uploadBytes(storageRef, screenData.file);
-      console.log('✅ Upload concluído:', uploadResult);
-
-      const downloadUrl = await getDownloadURL(uploadResult.ref);
-      console.log('🔗 URL obtida:', downloadUrl);
-
-      // 2. Salvar metadados no Firestore com a URL real
-      const docRef = await addDoc(collection(db, `apps/${appId}/screens`), {
-        appId,
-        imageUrl: downloadUrl,
-        order: screens.length,
-        name: screenData.name,
-        deviceType: screenData.deviceType
-      });
-
-      // Optimistic update to ensure immediate display
-      const newScreen: ScreenData = {
-        id: docRef.id,
-        appId,
-        imageUrl: downloadUrl,
-        order: screens.length,
-        name: screenData.name,
-        deviceType: screenData.deviceType
-      };
-      
-      setScreens(prev => [...prev, newScreen].sort((a, b) => a.order - b.order));
-      setActiveScreenId(docRef.id);
-    } catch (error) {
-      console.error('❌ Erro detalhado:', error);
-      handleFirestoreError(error, OperationType.CREATE, `apps/${appId}/screens`);
-    }
+    // 2. setState React — screens array no estado local
+    setScreens(prev => [...prev, newScreen]);
+    
+    // 3. Seleção automática — activeScreenId = newScreen.id
+    setActiveScreenId(newScreen.id);
+    
+    // Fechar modal
+    setIsNewScreenModalOpen(false);
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (!canvasRef.current) return;
+    if (!isDrawingMode || !canvasRef.current || showHotspotPopover) return;
+    
+    // If clicking outside a hotspot, deselect
+    const target = e.target as HTMLElement;
+    if (!target.closest('.hotspot-item')) {
+      setSelectedHotspotId(null);
+    }
+
     const rect = canvasRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     
+    // Se já estiver desenhando (modo sticky), finaliza no segundo clique
+    if (isDrawing && currentHotspot) {
+      finishDrawing(currentHotspot);
+      return;
+    }
+
     setIsDrawing(true);
     setStartPos({ x, y });
     setCurrentHotspot({ x, y, width: 0, height: 0 });
@@ -198,41 +181,59 @@ export default function AppEditor() {
     setCurrentHotspot({ x: left, y: top, width, height });
   };
 
-  const handleMouseUp = () => {
-    if (!isDrawing || !currentHotspot || !appId || !activeScreenId) return;
-    setIsDrawing(false);
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (!isDrawing || !currentHotspot) return;
     
-    if (currentHotspot.width! < 1 || currentHotspot.height! < 1) {
-      setCurrentHotspot(null);
-      return;
+    // Se foi um arraste significativo (mais de 2%), finaliza imediatamente
+    if (currentHotspot.width! > 2 || currentHotspot.height! > 2) {
+      finishDrawing(currentHotspot);
     }
+    // Caso contrário, foi apenas um clique inicial ou movimento curto, mantém isDrawing=true para o modo "sticky"
+  };
 
-    // Set pending hotspot and show popover
-    setPendingHotspot({
-      ...currentHotspot,
+  const finishDrawing = (hotspot: Partial<HotspotData>) => {
+    if (!appId || !activeScreenId) return;
+    
+    setIsDrawing(false);
+    const hotspotData: Partial<HotspotData> = {
+      ...hotspot,
       screenId: activeScreenId,
       targetScreenId: '',
-      label: 'Novo Hotspot'
-    });
+      label: ''
+    };
+    setPendingHotspot(hotspotData);
     
-    // Calculate popover position (near the bottom right of the hotspot)
     setPopoverPos({
-      x: currentHotspot.x! + currentHotspot.width!,
-      y: currentHotspot.y! + currentHotspot.height!
+      x: hotspot.x! + hotspot.width!,
+      y: hotspot.y! + hotspot.height!
     });
     
     setShowHotspotPopover(true);
     setCurrentHotspot(null);
+    // Mantemos isDrawingMode como true para permitir criar vários sem re-clicar no ícone
   };
 
   const handleSaveHotspot = async () => {
     if (!pendingHotspot || !appId || !activeScreenId) return;
     
     try {
-      await addDoc(collection(db, `apps/${appId}/screens/${activeScreenId}/hotspots`), {
-        ...pendingHotspot,
-        createdAt: serverTimestamp()
-      });
+      if (pendingHotspot.id && !pendingHotspot.id.startsWith('temp-')) {
+        // Update existing in Firebase
+        const { id, ...data } = pendingHotspot;
+        await updateDoc(doc(db, `apps/${appId}/screens/${activeScreenId}/hotspots`, id), data);
+      } else {
+        // Create new in Firebase
+        await addDoc(collection(db, `apps/${appId}/screens/${activeScreenId}/hotspots`), {
+          screenId: activeScreenId,
+          targetScreenId: pendingHotspot.targetScreenId || '',
+          x: pendingHotspot.x!,
+          y: pendingHotspot.y!,
+          width: pendingHotspot.width!,
+          height: pendingHotspot.height!,
+          label: pendingHotspot.label || '',
+          createdAt: serverTimestamp()
+        });
+      }
       setShowHotspotPopover(false);
       setPendingHotspot(null);
     } catch (error) {
@@ -254,15 +255,14 @@ export default function AppEditor() {
     }
   };
 
-  const handleUpdateHotspotTarget = async (hotspotId: string, targetId: string) => {
-    if (!appId || !activeScreenId) return;
-    try {
-      await updateDoc(doc(db, `apps/${appId}/screens/${activeScreenId}/hotspots`, hotspotId), {
-        targetScreenId: targetId
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'hotspots');
-    }
+  const handleEditHotspot = (hotspot: HotspotData) => {
+    setPendingHotspot(hotspot);
+    setSelectedHotspotId(hotspot.id);
+    setPopoverPos({
+      x: hotspot.x + hotspot.width,
+      y: hotspot.y + hotspot.height
+    });
+    setShowHotspotPopover(true);
   };
 
   const handlePublish = async () => {
@@ -347,10 +347,10 @@ export default function AppEditor() {
             >
               <div className={`aspect-[9/16] bg-slate-800 relative`}>
                 <img src={screen.imageUrl} alt={screen.name} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
-                {screen.deviceType && (
+                {screen.device && (
                   <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-black/60 backdrop-blur-md rounded text-[8px] font-bold text-white uppercase tracking-wider flex items-center gap-1">
-                    {screen.deviceType === 'Mobile' ? <Smartphone className="w-2 h-2" /> : <Monitor className="w-2 h-2" />}
-                    {screen.deviceType}
+                    {screen.device === 'mobile' ? <Smartphone className="w-2 h-2" /> : <Monitor className="w-2 h-2" />}
+                    {screen.device}
                   </div>
                 )}
               </div>
@@ -382,10 +382,16 @@ export default function AppEditor() {
       <section className="flex-1 flex flex-col relative overflow-hidden">
         {/* Editor Toolbar */}
         <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-800 rounded-full px-2 py-1.5 flex items-center gap-1 shadow-2xl z-20">
-          <button className="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+          <button 
+            onClick={() => setIsDrawingMode(false)}
+            className={`w-10 h-10 flex items-center justify-center rounded-full transition-colors ${!isDrawingMode ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+          >
             <MousePointer2 className="w-5 h-5" />
           </button>
-          <button className="w-10 h-10 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-900/40">
+          <button 
+            onClick={() => setIsDrawingMode(true)}
+            className={`w-10 h-10 flex items-center justify-center rounded-full transition-colors ${isDrawingMode ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+          >
             <Square className="w-5 h-5" />
           </button>
           <button className="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
@@ -403,23 +409,36 @@ export default function AppEditor() {
           </button>
         </div>
 
-        <div className="flex-1 flex items-center justify-center p-12 overflow-auto custom-scroll canvas-container">
+        <div className="flex-1 flex items-start justify-center p-12 overflow-auto custom-scroll canvas-container">
+          {isDrawingMode && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-blue-600 text-white px-4 py-2 rounded-full text-xs font-bold shadow-xl flex items-center gap-2 animate-bounce">
+              <MousePointer2 className="w-3 h-3" />
+              Clique e arraste para marcar uma área clicável — ESC para cancelar
+            </div>
+          )}
           {activeScreen ? (
             <div 
               ref={canvasRef}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
-              className={`canvas-view relative group max-h-full shadow-[0_0_80px_rgba(0,0,0,0.5)] border border-blue-500/30 bg-slate-900 overflow-hidden cursor-crosshair transition-all duration-500 canvas-frame ${
-                activeScreen.deviceType === 'Desktop' 
-                  ? 'aspect-[16/10] w-full max-w-5xl rounded-2xl desktop-frame' 
-                  : 'aspect-[9/19.5] rounded-[2rem] mobile-frame'
+              className={`canvas-view relative group shadow-[0_0_80px_rgba(0,0,0,0.5)] border border-blue-500/30 bg-slate-900 overflow-hidden transition-all duration-500 canvas-frame ${
+                isDrawingMode ? 'cursor-crosshair' : 'cursor-default'
+              } ${
+                activeScreen.device === 'desktop' 
+                  ? 'desktop-frame' 
+                  : 'mobile-frame'
               }`}
+              style={{
+                width: activeScreen.device === 'desktop' ? 'min(900px, 90%)' : 'min(390px, 60%)',
+                aspectRatio: activeScreen.device === 'desktop' ? '16/9' : '9/19.5',
+                height: 'auto'
+              }}
             >
               <img 
                 src={activeScreen.imageUrl} 
                 alt={activeScreen.name} 
-                className="w-full h-full object-contain select-none pointer-events-none" 
+                className="w-full h-full object-contain block select-none pointer-events-none" 
                 referrerPolicy="no-referrer"
               />
               
@@ -427,7 +446,12 @@ export default function AppEditor() {
               {hotspots.map((hotspot) => (
                 <div 
                   key={hotspot.id}
-                  className="absolute border border-blue-500 bg-[#4f6ef74d] backdrop-blur-[1px] group/hotspot hover:bg-[#4f6ef7b3] transition-all cursor-pointer"
+                  onClick={(e) => { e.stopPropagation(); handleEditHotspot(hotspot); }}
+                  className={`absolute border rounded-[4px] hotspot-item group/hotspot transition-all cursor-pointer ${
+                    selectedHotspotId === hotspot.id 
+                      ? 'border-[#4f6ef7] border-[3px] bg-[#4f6ef74d] z-20' 
+                      : 'border-[#4f6ef7] border-2 bg-[#4f6ef759] opacity-[0.35] hover:opacity-[0.65] z-10'
+                  }`}
                   style={{
                     left: `${hotspot.x}%`,
                     top: `${hotspot.y}%`,
@@ -435,22 +459,24 @@ export default function AppEditor() {
                     height: `${hotspot.height}%`
                   }}
                 >
-                  <div className="absolute -top-6 left-0 bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded opacity-0 group-hover/hotspot:opacity-100 transition-opacity shadow-lg whitespace-nowrap z-10">
-                    Leva para: {screens.find(s => s.id === hotspot.targetScreenId)?.name || 'Nenhuma'}
+                  {selectedHotspotId === hotspot.id && (
+                    <>
+                      <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                      <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                      <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                      <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                    </>
+                  )}
+                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] px-2 py-1 rounded-lg opacity-0 group-hover/hotspot:opacity-100 transition-opacity shadow-xl whitespace-nowrap pointer-events-none border border-slate-800">
+                    Ir para: <span className="text-blue-400 font-bold">{screens.find(s => s.id === hotspot.targetScreenId)?.name || 'Nenhuma'}</span>
                   </div>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); handleDeleteHotspot(hotspot.id); }}
-                    className="absolute -top-2 -right-2 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover/hotspot:opacity-100 transition-opacity shadow-md"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
                 </div>
               ))}
 
               {/* Drawing Hotspot */}
               {currentHotspot && (
                 <div 
-                  className="absolute border border-blue-400 bg-[#4f6ef74d]"
+                  className="absolute border-2 border-[#4f6ef7] bg-[#4f6ef740] rounded-[4px] z-30 pointer-events-none"
                   style={{
                     left: `${currentHotspot.x}%`,
                     top: `${currentHotspot.y}%`,
@@ -460,6 +486,24 @@ export default function AppEditor() {
                 />
               )}
 
+              {/* Pending Hotspot (being configured) */}
+              {showHotspotPopover && pendingHotspot && (
+                <div 
+                  className="absolute border-[3px] border-[#4f6ef7] bg-[#4f6ef74d] rounded-[4px] z-30 pointer-events-none"
+                  style={{
+                    left: `${pendingHotspot.x}%`,
+                    top: `${pendingHotspot.y}%`,
+                    width: `${pendingHotspot.width}%`,
+                    height: `${pendingHotspot.height}%`
+                  }}
+                >
+                  <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                  <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                  <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                  <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full" />
+                </div>
+              )}
+
               {/* Hotspot Popover */}
               <AnimatePresence>
                 {showHotspotPopover && pendingHotspot && (
@@ -467,44 +511,44 @@ export default function AppEditor() {
                     initial={{ opacity: 0, scale: 0.9, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                    className="absolute z-50 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl w-64"
+                    className="absolute z-50 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl w-72"
                     style={{
-                      left: `${Math.min(popoverPos.x, 70)}%`,
-                      top: `${Math.min(popoverPos.y, 80)}%`
+                      left: `${Math.min(popoverPos.x, 65)}%`,
+                      top: `${Math.min(popoverPos.y, 75)}%`
                     }}
                   >
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Novo Hotspot</span>
-                        <button onClick={handleCancelHotspot} className="text-slate-500 hover:text-white">
-                          <X className="w-3 h-3" />
-                        </button>
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ação de Navegação</span>
+                        <h3 className="text-sm font-semibold text-white">Para qual tela este clique leva?</h3>
                       </div>
                       
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-medium text-slate-500 uppercase">Navegar para:</label>
-                        <select 
-                          value={pendingHotspot.targetScreenId}
-                          onChange={(e) => setPendingHotspot({ ...pendingHotspot, targetScreenId: e.target.value })}
-                          className="w-full bg-slate-800 border-none rounded-lg text-xs text-slate-200 py-2 focus:ring-1 focus:ring-blue-500"
-                        >
-                          <option value="">Selecione uma tela</option>
-                          {screens.filter(s => s.id !== activeScreenId).map(s => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
+                      <div className="space-y-3">
+                        <div className="relative">
+                          <select 
+                            value={pendingHotspot.targetScreenId}
+                            onChange={(e) => setPendingHotspot({ ...pendingHotspot, targetScreenId: e.target.value })}
+                            className="w-full bg-slate-800 border-2 border-slate-700 rounded-xl text-xs text-slate-200 py-3 px-4 focus:ring-2 focus:ring-blue-500 transition-all appearance-none cursor-pointer pr-10"
+                          >
+                            <option value="">Selecionar tela...</option>
+                            {screens.filter(s => s.id !== activeScreenId).map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                            ))}
+                          </select>
+                          <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                        </div>
                       </div>
-
-                      <div className="flex gap-2">
+ 
+                      <div className="flex gap-3 pt-2">
                         <button 
                           onClick={handleCancelHotspot}
-                          className="flex-1 px-3 py-2 rounded-lg text-[10px] font-bold text-slate-400 hover:bg-slate-800 transition-all"
+                          className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
                         >
                           Cancelar
                         </button>
                         <button 
                           onClick={handleSaveHotspot}
-                          className="flex-1 px-3 py-2 rounded-lg text-[10px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/20"
+                          className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40"
                         >
                           Salvar
                         </button>
@@ -548,8 +592,8 @@ export default function AppEditor() {
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Propriedades da Tela</h3>
             {activeScreen && (
               <div className="flex items-center gap-1 px-2 py-0.5 bg-slate-800 rounded text-[9px] font-bold text-slate-400 uppercase">
-                {activeScreen.deviceType === 'Mobile' ? <Smartphone className="w-2.5 h-2.5" /> : <Monitor className="w-2.5 h-2.5" />}
-                {activeScreen.deviceType}
+                {activeScreen.device === 'mobile' ? <Smartphone className="w-2.5 h-2.5" /> : <Monitor className="w-2.5 h-2.5" />}
+                {activeScreen.device}
               </div>
             )}
           </div>
@@ -578,7 +622,7 @@ export default function AppEditor() {
                 <div className="p-3 bg-slate-800/30 rounded-xl border border-slate-800">
                   <div className="text-[9px] font-bold text-slate-500 uppercase mb-1">Dimensões</div>
                   <div className="text-xs font-medium text-slate-300">
-                    {activeScreen.deviceType === 'Mobile' ? '390 × 844' : '1440 × 900'}
+                    {activeScreen.device === 'mobile' ? '390 × 844' : '1440 × 900'}
                   </div>
                 </div>
                 <div className="p-3 bg-slate-800/30 rounded-xl border border-slate-800">
@@ -597,7 +641,10 @@ export default function AppEditor() {
         <section className="flex-1 overflow-y-auto no-scrollbar">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Interações ({hotspots.length})</h3>
-            <button className="p-1.5 bg-blue-600/10 text-blue-400 rounded-lg hover:bg-blue-600/20 transition-all">
+            <button 
+              onClick={() => setIsDrawingMode(true)}
+              className={`p-1.5 rounded-lg transition-all ${isDrawingMode ? 'bg-blue-600 text-white' : 'bg-blue-600/10 text-blue-400 hover:bg-blue-600/20'}`}
+            >
               <Plus className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -608,34 +655,29 @@ export default function AppEditor() {
                 <MousePointer2 className="w-5 h-5" />
               </div>
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                Clique e arraste sobre a imagem para marcar uma área clicável
+                Clique no botão + acima e arraste sobre a imagem para marcar uma área clicável
               </p>
             </div>
           ) : (
             <div className="space-y-2">
             {hotspots.map((hotspot) => (
-              <div key={hotspot.id} className="p-3 bg-slate-800/50 border border-slate-800 rounded-xl flex flex-col gap-2">
+              <div 
+                key={hotspot.id} 
+                onClick={() => setSelectedHotspotId(hotspot.id)}
+                className={`p-3 border rounded-xl flex flex-col gap-2 transition-all cursor-pointer ${
+                  selectedHotspotId === hotspot.id ? 'bg-blue-600/10 border-blue-500/50' : 'bg-slate-800/50 border-slate-800 hover:border-slate-700'
+                }`}
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <MousePointer2 className="w-3 h-3 text-blue-400" />
-                    <span className="text-[11px] font-bold text-slate-200">{hotspot.label || 'Hotspot'}</span>
+                    <ChevronRight className="w-3 h-3 text-blue-400" />
+                    <span className="text-[11px] font-bold text-slate-200">
+                      Área → {screens.find(s => s.id === hotspot.targetScreenId)?.name || 'Sem destino'}
+                    </span>
                   </div>
-                  <button onClick={() => handleDeleteHotspot(hotspot.id)} className="text-slate-500 hover:text-red-500">
+                  <button onClick={(e) => { e.stopPropagation(); handleDeleteHotspot(hotspot.id); }} className="text-slate-500 hover:text-red-500 p-1">
                     <Trash2 className="w-3 h-3" />
                   </button>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[9px] font-medium text-slate-500 uppercase">Destino</label>
-                  <select 
-                    value={hotspot.targetScreenId}
-                    onChange={(e) => handleUpdateHotspotTarget(hotspot.id, e.target.value)}
-                    className="w-full bg-slate-900 border-none rounded-lg text-[10px] text-slate-300 py-1 focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="">Nenhuma</option>
-                    {screens.filter(s => s.id !== activeScreenId).map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
                 </div>
               </div>
             ))}
