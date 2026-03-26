@@ -4,7 +4,6 @@ import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, se
 import { AppData, ScreenData, HotspotData, IssueData } from '../types';
 import { 
   ArrowLeft, 
-  LogOut, 
   Eye, 
   Info, 
   X, 
@@ -154,11 +153,11 @@ export default function AppViewer() {
             <span className="text-xs">{isFullscreen ? 'Sair' : 'Fullscreen'}</span>
           </button>
           <button 
-            onClick={() => navigate('/')}
+            onClick={() => appId && navigate(`/apps/${appId}/edit`)}
             className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all"
           >
-            Sair do Modo de Teste
-            <LogOut className="w-4 h-4" />
+            <ArrowLeft className="w-4 h-4" />
+            Retornar para edição
           </button>
         </div>
       </header>

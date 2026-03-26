@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
+import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, getDocs, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData } from '../types';
 import { 
   ArrowLeft, 
@@ -326,6 +326,32 @@ export default function AppEditor() {
     }
   };
 
+  const handleDeleteScreen = async (screenId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!appId || appId === 'new') return;
+    const screen = screens.find((s) => s.id === screenId);
+    if (!window.confirm(`Excluir a tela "${screen?.name ?? ''}"? A imagem e as interações desta tela serão removidas do banco.`)) {
+      return;
+    }
+    try {
+      const hotspotsSnap = await getDocs(collection(db, `apps/${appId}/screens/${screenId}/hotspots`));
+      await Promise.all(hotspotsSnap.docs.map((d) => deleteDoc(d.ref)));
+      await deleteDoc(doc(db, 'apps', appId, 'screens', screenId));
+
+      if (activeScreenId === screenId) {
+        const remaining = screens.filter((s) => s.id !== screenId);
+        setActiveScreenId(remaining[0]?.id ?? null);
+      }
+      setSelectedHotspotId(null);
+      setShowHotspotPopover(false);
+      setPendingHotspot(null);
+      setIsDrawing(false);
+      setCurrentHotspot(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `apps/${appId}/screens/${screenId}`);
+    }
+  };
+
   if (isCreatingApp) {
     return (
       <div className="p-8 max-w-2xl mx-auto">
@@ -378,7 +404,7 @@ export default function AppEditor() {
   const activeScreen = screens.find(s => s.id === activeScreenId);
 
   return (
-    <div className="flex h-full overflow-hidden bg-slate-950">
+    <div className="flex h-dvh min-h-dvh overflow-hidden bg-slate-950">
       {/* Left Sidebar: Screens */}
       <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col">
         <div className="p-4 border-b border-slate-800 flex justify-between items-center">
@@ -398,6 +424,15 @@ export default function AppEditor() {
             >
               <div className={`aspect-9/16 bg-slate-800 relative`}>
                 <img src={screen.imageUrl} alt={screen.name} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
+                <button
+                  type="button"
+                  onClick={(e) => handleDeleteScreen(screen.id, e)}
+                  className="absolute top-2 left-2 z-10 p-1.5 rounded-md bg-black/70 text-slate-300 hover:bg-red-600 hover:text-white transition-colors shadow-lg"
+                  title="Excluir tela"
+                  aria-label={`Excluir tela ${screen.name}`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
                 {screen.device && (
                   <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-black/60 backdrop-blur-md rounded text-[8px] font-bold text-white uppercase tracking-wider flex items-center gap-1">
                     {screen.device === 'mobile' ? <Smartphone className="w-2 h-2" /> : <Monitor className="w-2 h-2" />}
@@ -431,6 +466,15 @@ export default function AppEditor() {
 
       {/* Center: Editor */}
       <section className="flex-1 flex flex-col relative overflow-hidden">
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          className="absolute top-6 left-6 z-30 flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-800 hover:text-white hover:border-slate-700 transition-colors shadow-lg"
+          title="Voltar à página inicial"
+        >
+          <ArrowLeft className="w-4 h-4 shrink-0" />
+          Sair
+        </button>
         {/* Editor Toolbar */}
         <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-800 rounded-full px-2 py-1.5 flex items-center gap-1 shadow-2xl z-20">
           <button 
@@ -460,7 +504,7 @@ export default function AppEditor() {
           </button>
         </div>
 
-        <div className="flex-1 flex items-start justify-center p-12 overflow-auto custom-scroll canvas-container">
+        <div className="flex-1 min-h-0 flex items-start justify-center p-12 overflow-auto custom-scroll canvas-container">
           {isDrawingMode && (
             <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-blue-600 text-white px-4 py-2 rounded-full text-xs font-bold shadow-xl flex items-center gap-2 animate-bounce">
               <MousePointer2 className="w-3 h-3" />
