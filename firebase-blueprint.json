@@ -10,7 +10,8 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "When the app was created." },
         "platform": { "type": "string", "enum": ["iOS", "Android", "Web"], "description": "The target platform." },
         "status": { "type": "string", "enum": ["Draft", "Published"], "description": "The publication status." },
-        "version": { "type": "string", "description": "The version of the app." }
+        "version": { "type": "string", "description": "The version of the app." },
+        "defaultDevice": { "type": "string", "enum": ["mobile", "desktop"], "description": "Default frame for new screens in the editor." }
       },
       "required": ["name", "ownerId", "createdAt", "platform", "status"]
     },

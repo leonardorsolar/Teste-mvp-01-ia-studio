@@ -6,9 +6,7 @@ import {
   ArrowLeft, 
   Plus, 
   Trash2, 
-  Save, 
   Smartphone, 
-  Globe, 
   GripVertical, 
   MousePointer2, 
   Square, 
@@ -17,24 +15,22 @@ import {
   Settings as SettingsIcon,
   ChevronRight,
   Eye,
-  X,
   Monitor
 } from 'lucide-react';
 import { motion, Reorder, AnimatePresence } from 'motion/react';
 import NewScreenModal from '../components/NewScreenModal';
+import NewAppModal, { NewAppFormData } from '../components/NewAppModal';
 
 export default function AppEditor() {
   const { appId } = useParams();
   const navigate = useNavigate();
+  const isCreatingApp = appId === 'new';
   const [app, setApp] = useState<AppData | null>(null);
   const [screens, setScreens] = useState<ScreenData[]>([]);
   const [activeScreenId, setActiveScreenId] = useState<string | null>(null);
   const [hotspots, setHotspots] = useState<HotspotData[]>([]);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
-  const [isCreatingApp, setIsCreatingApp] = useState(appId === 'new');
-  const [newAppName, setNewAppName] = useState('');
-  const [newAppPlatform, setNewAppPlatform] = useState<'iOS' | 'Android' | 'Web'>('iOS');
   const [isNewScreenModalOpen, setIsNewScreenModalOpen] = useState(false);
   
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -101,16 +97,17 @@ export default function AppEditor() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedHotspotId, showHotspotPopover]);
 
-  const handleCreateApp = async () => {
-    if (!newAppName || !auth.currentUser) return;
+  const handleCreateAppFromModal = async (data: NewAppFormData) => {
+    if (!auth.currentUser) return;
     try {
       const appRef = await addDoc(collection(db, 'apps'), {
-        name: newAppName,
+        name: data.name,
         ownerId: auth.currentUser.uid,
         createdAt: serverTimestamp(),
-        platform: newAppPlatform,
+        platform: data.platform,
         status: 'Draft',
-        version: 'v1.0.0'
+        version: 'v1.0.0',
+        defaultDevice: data.defaultDevice
       });
       navigate(`/apps/${appRef.id}/edit`);
     } catch (error) {
@@ -130,32 +127,12 @@ export default function AppEditor() {
     });
 
     try {
-      let targetAppId = appId;
-
-      if (!targetAppId || targetAppId === 'new') {
-        if (!auth.currentUser) {
-          throw new Error('Usuário não autenticado. Faça login para criar o app.');
-        }
-
-        const appName = (newAppName || '').trim() || `Novo App ${new Date().toLocaleString('pt-BR')}`;
-        const appRef = await addDoc(collection(db, 'apps'), {
-          name: appName,
-          ownerId: auth.currentUser.uid,
-          createdAt: serverTimestamp(),
-          platform: newAppPlatform,
-          status: 'Draft',
-          version: 'v1.0.0'
-        });
-
-        targetAppId = appRef.id;
-        console.log('[Firestore][apps][auto-created]', {
-          appId: targetAppId,
-          name: appName,
-          platform: newAppPlatform,
-        });
-
-        navigate(`/apps/${targetAppId}/edit`, { replace: true });
+      if (!appId || appId === 'new') {
+        alert('Crie o aplicativo pelo modal antes de adicionar telas.');
+        return;
       }
+
+      const targetAppId = appId;
 
       const payload = {
         appId: targetAppId,
@@ -317,7 +294,7 @@ export default function AppEditor() {
   };
 
   const handlePublish = async () => {
-    if (!appId) return;
+    if (!appId || appId === 'new') return;
     try {
       await updateDoc(doc(db, 'apps', appId), { status: 'Published' });
       alert('App publicado com sucesso!');
@@ -352,64 +329,25 @@ export default function AppEditor() {
     }
   };
 
-  if (isCreatingApp) {
-    return (
-      <div className="p-8 max-w-2xl mx-auto">
-        <button onClick={() => navigate('/')} className="flex items-center gap-2 text-slate-500 mb-8 hover:text-blue-600">
-          <ArrowLeft className="w-4 h-4" /> Voltar
-        </button>
-        <h1 className="text-3xl font-bold mb-6">Criar Novo Aplicativo</h1>
-        <div className="bg-white rounded-2xl p-8 shadow-sm space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Nome do App</label>
-            <input 
-              type="text" 
-              value={newAppName}
-              onChange={(e) => setNewAppName(e.target.value)}
-              className="w-full border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500/20 transition-all"
-              placeholder="Ex: EcoTrack Pro"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Plataforma</label>
-            <div className="grid grid-cols-3 gap-4">
-              {(['iOS', 'Android', 'Web'] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setNewAppPlatform(p)}
-                  className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
-                    newAppPlatform === p ? "border-blue-600 bg-blue-50 text-blue-600" : "border-slate-100 text-slate-500 hover:border-slate-200"
-                  }`}
-                >
-                  {p === 'iOS' && <Smartphone className="w-6 h-6" />}
-                  {p === 'Android' && <Smartphone className="w-6 h-6" />}
-                  {p === 'Web' && <Globe className="w-6 h-6" />}
-                  <span className="text-xs font-bold">{p}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-          <button 
-            onClick={handleCreateApp}
-            disabled={!newAppName}
-            className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition-all"
-          >
-            Continuar para o Editor
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const activeScreen = screens.find(s => s.id === activeScreenId);
 
   return (
     <div className="flex h-dvh min-h-dvh overflow-hidden bg-slate-950">
+      <NewAppModal
+        isOpen={isCreatingApp}
+        onCancel={() => navigate('/')}
+        onCreate={handleCreateAppFromModal}
+      />
       {/* Left Sidebar: Screens */}
       <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col">
         <div className="p-4 border-b border-slate-800 flex justify-between items-center">
           <h2 className="font-semibold text-slate-200 text-sm">Telas ({screens.length})</h2>
-          <button onClick={handleAddScreen} className="text-slate-500 hover:text-white">
+          <button
+            type="button"
+            onClick={handleAddScreen}
+            disabled={isCreatingApp}
+            className="text-slate-500 hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+          >
             <Plus className="w-4 h-4" />
           </button>
         </div>
@@ -449,8 +387,10 @@ export default function AppEditor() {
             </div>
           ))}
           <button 
+            type="button"
             onClick={handleAddScreen}
-            className="w-full aspect-9/16 border-2 border-dashed border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/30 rounded-xl flex flex-col items-center justify-center gap-2 transition-all group"
+            disabled={isCreatingApp}
+            className="w-full aspect-9/16 border-2 border-dashed border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/30 rounded-xl flex flex-col items-center justify-center gap-2 transition-all group disabled:opacity-30 disabled:pointer-events-none"
           >
             <Plus className="w-6 h-6 text-slate-500 group-hover:text-blue-400" />
             <span className="text-[10px] font-semibold text-slate-500">Nova Tela</span>
@@ -462,6 +402,13 @@ export default function AppEditor() {
         isOpen={isNewScreenModalOpen}
         onClose={() => setIsNewScreenModalOpen(false)}
         onAdd={handleSaveNewScreen}
+        initialDeviceType={
+          app?.defaultDevice === 'desktop'
+            ? 'Desktop'
+            : app?.defaultDevice === 'mobile'
+              ? 'Mobile'
+              : undefined
+        }
       />
 
       {/* Center: Editor */}
@@ -497,8 +444,10 @@ export default function AppEditor() {
             <Layers className="w-5 h-5" />
           </button>
           <button 
-            onClick={() => navigate(`/apps/${appId}/view`)}
-            className="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={() => appId && appId !== 'new' && navigate(`/apps/${appId}/view`)}
+            disabled={!appId || appId === 'new'}
+            className="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >
             <Eye className="w-5 h-5" />
           </button>
@@ -671,8 +620,10 @@ export default function AppEditor() {
           </div>
           <div className="flex items-center gap-4">
             <button 
+              type="button"
               onClick={handlePublish}
-              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all"
+              disabled={isCreatingApp}
+              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all disabled:opacity-40 disabled:pointer-events-none"
             >
               Publicar App
             </button>

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, ArrowLeft, Monitor, Smartphone, Upload, RotateCcw, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -6,6 +6,8 @@ interface NewScreenModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAdd: (screen: { name: string; device: 'mobile' | 'desktop'; imageUrl: string }) => void | Promise<void>;
+  /** Alinha o seletor com o padrão do app (Firestore `defaultDevice`). */
+  initialDeviceType?: 'Mobile' | 'Desktop';
 }
 
 const MAX_BASE64_CHARS = 900_000;
@@ -76,13 +78,20 @@ async function compressToDataUrl(file: File, deviceType: 'Mobile' | 'Desktop'): 
   );
 }
 
-export default function NewScreenModal({ isOpen, onClose, onAdd }: NewScreenModalProps) {
+export default function NewScreenModal({ isOpen, onClose, onAdd, initialDeviceType }: NewScreenModalProps) {
   const [name, setName] = useState('');
   const [deviceType, setDeviceType] = useState<'Mobile' | 'Desktop'>('Mobile');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (initialDeviceType) {
+      setDeviceType(initialDeviceType);
+    }
+  }, [isOpen, initialDeviceType]);
 
   const handleFile = async (file: File) => {
     if (file && (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp')) {

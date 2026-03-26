@@ -6,6 +6,7 @@ import { Plus, ExternalLink, Smartphone, Globe, Clock, Server, Trash2 } from 'lu
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
 import DeleteAppConfirmModal from '../components/DeleteAppConfirmModal';
+import AppCardCover from '../components/AppCardCover';
 
 export default function Dashboard() {
   const [apps, setApps] = useState<AppData[]>([]);
@@ -99,7 +100,7 @@ export default function Dashboard() {
           <p className="text-slate-500 max-w-lg">Gerencie o ciclo de vida e a arquitetura de seus produtos digitais em um único lugar.</p>
         </div>
         <button 
-          onClick={() => navigate('/apps/new')}
+          onClick={() => navigate('/apps/new/edit')}
           className="flex items-center gap-2 bg-gradient-to-br from-blue-600 to-blue-500 text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 active:scale-95 transition-all"
         >
           <Plus className="w-5 h-5" />
@@ -131,20 +132,19 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-stretch">
         {filteredApps.map((app) => (
           <motion.div 
             key={app.id}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="group bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all border border-transparent hover:border-blue-500/10"
+            className="group bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all border border-transparent hover:border-blue-500/10 flex flex-col h-full min-h-0"
           >
-            <div className="relative aspect-video overflow-hidden bg-slate-100">
-              <img 
-                src={`https://picsum.photos/seed/${app.id}/400/225`} 
+            <div className="relative aspect-video shrink-0 overflow-hidden bg-slate-100">
+              <AppCardCover
+                appId={app.id}
                 alt={app.name}
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                referrerPolicy="no-referrer"
               />
               <div className="absolute top-3 right-3 flex items-center gap-2">
                 <button
@@ -166,10 +166,10 @@ export default function Dashboard() {
                 </span>
               </div>
             </div>
-            <div className="p-5">
-              <div className="flex justify-between items-start mb-1">
-                <h3 className="font-bold text-lg text-slate-900">{app.name}</h3>
-                <Link to={`/apps/${app.id}/view`} className="text-slate-400 hover:text-blue-600 transition-colors">
+            <div className="p-5 flex flex-col flex-1 min-h-0">
+              <div className="flex justify-between items-start gap-2 mb-1">
+                <h3 className="font-bold text-lg text-slate-900 min-w-0 flex-1">{app.name}</h3>
+                <Link to={`/apps/${app.id}/view`} className="text-slate-400 hover:text-blue-600 transition-colors shrink-0">
                   <ExternalLink className="w-5 h-5" />
                 </Link>
               </div>
@@ -188,8 +188,9 @@ export default function Dashboard() {
                   </div>
                 </div>
               </div>
-              <div className="mt-4 flex gap-2">
+              <div className="mt-auto pt-4 flex gap-2">
                 <button 
+                  type="button"
                   onClick={() => navigate(`/apps/${app.id}/edit`)}
                   disabled={deletingId === app.id}
                   className="flex-1 py-2 text-xs font-semibold bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-50"
@@ -202,8 +203,9 @@ export default function Dashboard() {
         ))}
 
         <button 
-          onClick={() => navigate('/apps/new')}
-          className="group border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center p-8 hover:border-blue-500 hover:bg-blue-50 transition-all"
+          type="button"
+          onClick={() => navigate('/apps/new/edit')}
+          className="group border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center p-8 hover:border-blue-500 hover:bg-blue-50 transition-all h-full"
         >
           <div className="w-12 h-12 rounded-full bg-slate-100 group-hover:bg-blue-100 flex items-center justify-center mb-4 transition-colors">
             <Plus className="w-6 h-6 text-slate-400 group-hover:text-blue-600" />

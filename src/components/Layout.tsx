@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import jumpadLogoDark from '../assets/images/jumpad-logo-dark.svg';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -68,7 +69,11 @@ export default function Layout({ children }: LayoutProps) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center">
-          <h1 className="text-3xl font-bold text-blue-700 mb-2">AppMapper Pro</h1>
+          <img
+            src={jumpadLogoDark}
+            alt="Jumpad"
+            className="h-10 w-auto mx-auto mb-2 object-contain object-center"
+          />
           <p className="text-slate-500 mb-8">Faça login para gerenciar seus fluxos de aplicativos.</p>
           <button 
             onClick={handleLogin}
@@ -98,7 +103,11 @@ export default function Layout({ children }: LayoutProps) {
         isSidebarOpen ? "translate-x-0" : "-translate-x-full"
       )}>
         <div className="p-6">
-          <h2 className="text-blue-700 text-xl font-bold tracking-tight">AppMapper Pro</h2>
+          <img
+            src={jumpadLogoDark}
+            alt="Jumpad"
+            className="h-8 w-auto object-contain object-left"
+          />
           <p className="text-slate-400 text-[10px] font-medium uppercase tracking-widest mt-1">Design System Architect</p>
         </div>
 
@@ -139,7 +148,7 @@ export default function Layout({ children }: LayoutProps) {
               </div>
             </div>
             <button 
-              onClick={() => navigate('/apps/new')}
+              onClick={() => navigate('/apps/new/edit')}
               className="w-full bg-blue-600 text-white text-xs font-semibold py-2 rounded-lg hover:bg-blue-700 transition-colors active:scale-95 mb-2"
             >
               Criar Novo App

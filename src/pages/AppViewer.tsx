@@ -14,6 +14,7 @@ import {
   Minimize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import jumpadLogoDark from '../assets/images/jumpad-logo-dark.svg';
 
 export default function AppViewer() {
   const { appId } = useParams();
@@ -135,7 +136,14 @@ export default function AppViewer() {
       {/* Top Bar */}
       <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-50 shrink-0">
         <div className="flex items-center gap-4">
-          <button onClick={() => navigate('/')} className="text-blue-700 font-bold text-xl">AppMapper</button>
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="flex items-center shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
+            aria-label="Ir para o início"
+          >
+            <img src={jumpadLogoDark} alt="Jumpad" className="h-7 w-auto object-contain" />
+          </button>
           <div className="h-6 w-px bg-slate-200"></div>
           <span className="text-sm font-medium text-slate-500">{app?.name} — {app?.version}</span>
         </div>

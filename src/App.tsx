@@ -15,7 +15,7 @@ export default function App() {
           <Route path="/apps" element={<Layout><Dashboard /></Layout>} />
           <Route path="/apps/:appId/edit" element={<AppEditor />} />
           <Route path="/apps/:appId/view" element={<AppViewer />} />
-          <Route path="/apps/new" element={<AppEditor />} />
+          <Route path="/apps/new" element={<Navigate to="/apps/new/edit" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>

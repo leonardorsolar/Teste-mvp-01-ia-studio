@@ -8,6 +8,7 @@ export interface AppData {
   platform: 'iOS' | 'Android' | 'Web';
   status: 'Draft' | 'Published';
   version?: string;
+  defaultDevice?: 'mobile' | 'desktop';
 }
 
 export interface ScreenData {
