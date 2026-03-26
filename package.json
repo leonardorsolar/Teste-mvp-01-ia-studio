@@ -8,7 +8,8 @@
     "build": "vite build",
     "start": "node src/server/main.ts",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "deploy:firestore": "firebase deploy --only firestore"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

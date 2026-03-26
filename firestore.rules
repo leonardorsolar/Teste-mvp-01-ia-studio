@@ -48,6 +48,21 @@ service cloud.firestore {
     //   - priority: string (required, enum: Low, Medium, High)
     //   - status: string (required, enum: Open, Resolved)
     //
+    // Collection: apps/{appId}/guestSuggestions
+    // Document ID: suggestionId
+    // Fields:
+    //   - appId: string (required)
+    //   - screenId: string (required)
+    //   - guestId: string (required) - UUID gerado no frontend
+    //   - guestName: string (required) - nome informado pelo convidado
+    //   - text: string (required)
+    //   - x: number (required)
+    //   - y: number (required)
+    //   - createdAt: timestamp (required)
+    //   - priority: string (required, enum: Low, Medium, High)
+    //   - status: string (required, enum: Open, Resolved)
+    //   - source: string (required, value: "guest")
+    //
     // ===============================================================
 
     // ===============================================================
@@ -101,6 +116,28 @@ service cloud.firestore {
              data.status in ['Open', 'Resolved'];
     }
 
+    function isValidGuestSuggestion(data) {
+      return data.keys().hasAll(['appId', 'screenId', 'guestId', 'guestName', 'text',
+                                  'x', 'y', 'createdAt', 'priority', 'status', 'source']) &&
+             data.guestId is string && data.guestId.size() >= 10 && data.guestId.size() <= 64 &&
+             data.guestName is string && data.guestName.size() > 0 && data.guestName.size() <= 50 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500 &&
+             data.x is number && data.x >= 0 && data.x <= 100 &&
+             data.y is number && data.y >= 0 && data.y <= 100 &&
+             data.priority in ['Low', 'Medium', 'High'] &&
+             data.status == 'Open' &&
+             data.source == 'guest';
+    }
+
+    function isValidNpsResponse(data, appDocId) {
+      return data.keys().hasAll(['appId', 'userName', 'score', 'classification', 'issueIds', 'createdAt']) &&
+             data.appId is string && data.appId == appDocId &&
+             data.userName is string && data.userName.size() > 0 && data.userName.size() <= 100 &&
+             data.score is number && data.score >= 0 && data.score <= 10 &&
+             data.classification in ['detractor', 'neutral', 'promoter'] &&
+             data.issueIds is list && data.issueIds.size() <= 100;
+    }
+
     function isAdmin() {
       return isAuthenticated() &&
         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
@@ -112,19 +149,22 @@ service cloud.firestore {
     // ===============================================================
 
     match /apps/{appId} {
-      allow read: if isAuthenticated(); // Anyone authenticated can view apps (for shared links)
+      // Apps Published podem ser lidos sem autenticação (link de feedback compartilhado)
+      allow read: if isAuthenticated() || resource.data.status == 'Published';
       allow create: if isAuthenticated() && isValidApp(request.resource.data);
       allow update: if isOwner(resource.data.ownerId) && isValidApp(request.resource.data);
       allow delete: if isOwner(resource.data.ownerId);
 
       match /screens/{screenId} {
-        allow read: if isAuthenticated();
+        // Telas são imagens de protótipo – leitura pública para o viewer de feedback
+        allow read: if true;
         allow create: if isAppOwner(appId) && isValidScreen(request.resource.data);
         allow update: if isAppOwner(appId) && isValidScreen(request.resource.data);
         allow delete: if isAppOwner(appId);
 
         match /hotspots/{hotspotId} {
-          allow read: if isAuthenticated();
+          // Hotspots são navegação de protótipo – leitura pública para o viewer de feedback
+          allow read: if true;
           allow create: if isAppOwner(appId) && isValidHotspot(request.resource.data);
           allow update: if isAppOwner(appId) && isValidHotspot(request.resource.data);
           allow delete: if isAppOwner(appId);
@@ -136,6 +176,24 @@ service cloud.firestore {
         allow create: if isAuthenticated() && isValidIssue(request.resource.data);
         allow update: if (isOwner(resource.data.authorId) || isAppOwner(appId)) && isValidIssue(request.resource.data);
         allow delete: if isOwner(resource.data.authorId) || isAppOwner(appId);
+      }
+
+      match /guestSuggestions/{suggestionId} {
+        // Convidados não autenticados podem criar sugestões (validação rigorosa no server-side)
+        allow create: if isValidGuestSuggestion(request.resource.data) &&
+                         request.resource.data.appId == appId;
+        // Apenas o dono do app autenticado pode ler, atualizar status e deletar
+        allow read:   if isAuthenticated() && isAppOwner(appId);
+        allow update: if isAuthenticated() && isAppOwner(appId);
+        allow delete: if isAuthenticated() && isAppOwner(appId);
+      }
+
+      match /npsResponses/{npsId} {
+        // Convidados (sem auth) enviam NPS ao finalizar o fluxo de feedback
+        allow create: if isValidNpsResponse(request.resource.data, appId);
+        // Igual a guestSuggestions: só o dono do app lê (evita vazar NPS para qualquer usuário logado)
+        allow read: if isAuthenticated() && isAppOwner(appId);
+        allow update, delete: if false;
       }
     }
 

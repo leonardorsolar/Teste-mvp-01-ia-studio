@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
-import { AppData, ScreenData, HotspotData, IssueData } from '../types';
+import { db, auth, doc, collection, onSnapshot, query, addDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp, OperationType, handleFirestoreError } from '../firebase';
+import { AppData, ScreenData, HotspotData, IssueData, GuestSuggestionData, GuestSession } from '../types';
+import { getGuestSession, createGuestSession } from '../utils/guestSession';
+import { sanitizeText, sanitizeName } from '../utils/sanitize';
+import { checkRateLimit, recordSubmission } from '../utils/rateLimiter';
+import GuestNameModal from '../components/GuestNameModal';
 import { 
   ArrowLeft, 
   ChevronLeft,
@@ -12,6 +16,7 @@ import {
   AlertCircle,
   Clock,
   MessageSquare,
+  ClipboardList,
   Maximize2,
   Minimize2,
   Pencil,
@@ -62,6 +67,12 @@ export default function AppViewer() {
   const [feedbackTutorialChecks, setFeedbackTutorialChecks] = useState<boolean[]>(() =>
     Array(VIEWER_FEEDBACK_TUTORIAL_STEPS.length).fill(false)
   );
+  const [guestSession, setGuestSession] = useState<GuestSession | null>(null);
+  const [showGuestNameModal, setShowGuestNameModal] = useState(false);
+  const [guestSuggestions, setGuestSuggestions] = useState<GuestSuggestionData[]>([]);
+  const [rateLimitWarning, setRateLimitWarning] = useState(false);
+  const [sessionIssueIds, setSessionIssueIds] = useState<string[]>([]);
+
   const draggingIssueIdRef = useRef<string | null>(null);
   const issueDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const issueDragLiveRef = useRef<{ issueId: string; x: number; y: number } | null>(null);
@@ -83,6 +94,16 @@ export default function AppViewer() {
   }, [appId, isPublicFeedback]);
 
   useEffect(() => {
+    if (!isPublicFeedback || !appId) return;
+    const session = getGuestSession(appId);
+    if (session) {
+      setGuestSession(session);
+    } else {
+      setShowGuestNameModal(true);
+    }
+  }, [isPublicFeedback, appId]);
+
+  useEffect(() => {
     if (!appId) {
       setFeedbackTutorialChecks(Array(VIEWER_FEEDBACK_TUTORIAL_STEPS.length).fill(false));
       return;
@@ -94,15 +115,16 @@ export default function AppViewer() {
     if (!appId) return;
     const stored = loadViewerFeedbackTutorialChecks(appId);
     const next = [...stored];
+    const submissionCount = isPublicFeedback ? guestSuggestions.length : issues.length;
     next[0] = stored[0] || Boolean(isFeedbackMode && feedbackPos);
-    next[1] = stored[1] || issues.length >= 1;
-    next[2] = stored[2] || issues.length >= 2;
+    next[1] = stored[1] || submissionCount >= 1;
+    next[2] = stored[2] || submissionCount >= 2;
     const changed = next.some((v, i) => v !== stored[i]);
     if (changed) {
       saveViewerFeedbackTutorialChecks(appId, next);
     }
     setFeedbackTutorialChecks((prev) => (next.every((v, i) => v === prev[i]) ? prev : next));
-  }, [appId, isFeedbackMode, feedbackPos, issues.length]);
+  }, [appId, isFeedbackMode, feedbackPos, issues.length, guestSuggestions.length, isPublicFeedback]);
 
   useEffect(() => {
     if (appId) {
@@ -122,19 +144,34 @@ export default function AppViewer() {
         }
       });
 
-      const qIssues = query(collection(db, `apps/${appId}/issues`));
-      const unsubscribeIssues = onSnapshot(qIssues, (snapshot) => {
-        const issuesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as IssueData[];
-        setIssues(issuesData);
-      });
+      let unsubscribeIssues = () => {};
+      let unsubscribeGuestSuggestions = () => {};
+
+      if (!isPublicFeedback) {
+        // Modo admin: carrega issues autenticadas
+        const qIssues = query(collection(db, `apps/${appId}/issues`));
+        unsubscribeIssues = onSnapshot(qIssues, (snapshot) => {
+          const issuesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as IssueData[];
+          setIssues(issuesData);
+        });
+
+        // Modo admin: carrega também as sugestões de convidados
+        const qGuest = query(collection(db, `apps/${appId}/guestSuggestions`));
+        unsubscribeGuestSuggestions = onSnapshot(qGuest, (snapshot) => {
+          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GuestSuggestionData[];
+          setGuestSuggestions(data);
+        });
+      }
+      // Modo guest: sem subscriptions (issues exigem auth; guestSuggestions ficam em estado local)
 
       return () => {
         unsubscribeApp();
         unsubscribeScreens();
         unsubscribeIssues();
+        unsubscribeGuestSuggestions();
       };
     }
-  }, [appId]);
+  }, [appId, isPublicFeedback]);
 
   useEffect(() => {
     if (!isPublicFeedback || !appId || !app) return;
@@ -200,7 +237,7 @@ export default function AppViewer() {
     if (!appId || !currentScreenId || !feedbackPos || !feedbackText || !auth.currentUser) return;
     
     try {
-      await addDoc(collection(db, `apps/${appId}/issues`), {
+      const docRef = await addDoc(collection(db, `apps/${appId}/issues`), {
         appId,
         screenId: currentScreenId,
         authorId: auth.currentUser.uid,
@@ -212,11 +249,96 @@ export default function AppViewer() {
         priority: feedbackPriority,
         status: 'Open'
       });
+      setSessionIssueIds((prev) => [...prev, docRef.id]);
       setIsFeedbackMode(false);
       setFeedbackText('');
       setFeedbackPos(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'issues');
+    }
+  };
+
+  const handleSaveGuestSuggestion = async () => {
+    if (!appId || !currentScreenId || !feedbackPos || !feedbackText || !guestSession) return;
+
+    if (!checkRateLimit(appId)) {
+      setRateLimitWarning(true);
+      setTimeout(() => setRateLimitWarning(false), 5000);
+      return;
+    }
+
+    const cleanText = sanitizeText(feedbackText);
+    const cleanName = sanitizeName(guestSession.guestName);
+
+    try {
+      const docRef = await addDoc(collection(db, `apps/${appId}/guestSuggestions`), {
+        appId,
+        screenId: currentScreenId,
+        guestId: guestSession.guestId,
+        guestName: cleanName,
+        text: cleanText,
+        x: feedbackPos.x,
+        y: feedbackPos.y,
+        createdAt: serverTimestamp(),
+        priority: feedbackPriority,
+        status: 'Open',
+        source: 'guest',
+      });
+
+      recordSubmission(appId);
+      setSessionIssueIds((prev) => [...prev, docRef.id]);
+
+      // Adiciona ao estado local (guest não pode ler de volta do Firestore)
+      setGuestSuggestions((prev) => [
+        ...prev,
+        {
+          id: docRef.id,
+          appId,
+          screenId: currentScreenId,
+          guestId: guestSession.guestId,
+          guestName: cleanName,
+          text: cleanText,
+          x: feedbackPos.x,
+          y: feedbackPos.y,
+          createdAt: Timestamp.now(),
+          priority: feedbackPriority,
+          status: 'Open',
+          source: 'guest',
+        },
+      ]);
+
+      setIsFeedbackMode(false);
+      setFeedbackText('');
+      setFeedbackPos(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'guestSuggestions');
+    }
+  };
+
+  const handleDeleteGuestSuggestion = async (suggestionId: string) => {
+    if (!appId) return;
+    if (!window.confirm('Excluir esta sugestão de convidado permanentemente?')) return;
+    setIssueActionLoadingId(suggestionId);
+    try {
+      await deleteDoc(doc(db, `apps/${appId}/guestSuggestions`, suggestionId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'guestSuggestions');
+    } finally {
+      setIssueActionLoadingId(null);
+    }
+  };
+
+  const handleToggleGuestSuggestionStatus = async (suggestion: GuestSuggestionData) => {
+    if (!appId) return;
+    setIssueActionLoadingId(suggestion.id);
+    try {
+      await updateDoc(doc(db, `apps/${appId}/guestSuggestions`, suggestion.id), {
+        status: suggestion.status === 'Open' ? 'Resolved' : 'Open',
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'guestSuggestions');
+    } finally {
+      setIssueActionLoadingId(null);
     }
   };
 
@@ -337,6 +459,11 @@ export default function AppViewer() {
 
   const currentScreen = screens.find(s => s.id === currentScreenId);
   const screenIssues = issues.filter(i => i.screenId === currentScreenId);
+  const screenGuestSuggestions = guestSuggestions.filter(
+    (s) =>
+      s.screenId === currentScreenId &&
+      (isPublicFeedback ? s.guestId === guestSession?.guestId : true)
+  );
 
   const renderScreenIssueMarkers = () =>
     screenIssues.map((issue) => {
@@ -396,6 +523,63 @@ export default function AppViewer() {
               {draggable && (
                 <p className="mt-2 border-t border-slate-50 pt-2 text-[9px] italic text-slate-400">Segure e arraste para mover</p>
               )}
+              <div
+                className="absolute left-1/2 top-full -mt-px h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r border-slate-200/90 bg-white/95 shadow-[2px_2px_4px_-2px_rgba(15,23,42,0.08)] backdrop-blur-md"
+                aria-hidden
+              />
+            </div>
+          </div>
+        </div>
+      );
+    });
+
+  const renderGuestSuggestionMarkers = () =>
+    screenGuestSuggestions.map((suggestion) => {
+      const priorityLabel =
+        suggestion.priority === 'High'
+          ? 'Alta Prioridade'
+          : suggestion.priority === 'Medium'
+            ? 'Prioridade Média'
+            : 'Sugestão';
+      return (
+        <div
+          key={suggestion.id}
+          className={`group/gs-marker absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white z-10 select-none hover:z-[60] ${
+            suggestion.priority === 'High'
+              ? 'bg-orange-500'
+              : suggestion.priority === 'Medium'
+                ? 'bg-amber-500'
+                : 'bg-amber-400'
+          }`}
+          style={{ left: `${suggestion.x}%`, top: `${suggestion.y}%` }}
+          aria-label={`Convidado · ${priorityLabel}: ${suggestion.text}. Por ${suggestion.guestName}.`}
+        >
+          ?
+          <div
+            className="absolute left-1/2 bottom-[calc(100%+10px)] z-[100] w-max min-w-[200px] max-w-[min(280px,calc(100vw-3rem))] -translate-x-1/2 pointer-events-none opacity-0 translate-y-1 scale-[0.97] transition-all duration-200 ease-out group-hover/gs-marker:opacity-100 group-hover/gs-marker:translate-y-0 group-hover/gs-marker:scale-100"
+            role="tooltip"
+          >
+            <div className="relative rounded-xl border border-slate-200/90 bg-white/95 px-3.5 py-3 text-left shadow-[0_14px_44px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md">
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <span className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter bg-amber-50 text-amber-700">
+                  Convidado · {priorityLabel}
+                </span>
+                <span className="flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-slate-400">
+                  <Clock className="h-2.5 w-2.5" aria-hidden />
+                  {suggestion.createdAt?.toDate().toLocaleDateString()}
+                </span>
+              </div>
+              <p className="custom-scroll mb-2.5 max-h-28 overflow-y-auto pr-0.5 text-xs font-medium leading-snug text-slate-800">
+                {suggestion.text}
+              </p>
+              <div className="flex items-center gap-2 border-t border-slate-100 pt-2.5">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-100 text-[10px] font-bold text-amber-700">
+                  {suggestion.guestName.charAt(0)}
+                </div>
+                <span className="text-[10px] leading-tight text-slate-500">
+                  Por {suggestion.guestName}
+                </span>
+              </div>
               <div
                 className="absolute left-1/2 top-full -mt-px h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r border-slate-200/90 bg-white/95 shadow-[2px_2px_4px_-2px_rgba(15,23,42,0.08)] backdrop-blur-md"
                 aria-hidden
@@ -535,8 +719,11 @@ export default function AppViewer() {
                   </div>
                 ))}
 
-                {/* Issue Markers */}
-                {renderScreenIssueMarkers()}
+                {/* Issue Markers (admin only) */}
+                {!isPublicFeedback && renderScreenIssueMarkers()}
+
+                {/* Guest Suggestion Markers */}
+                {renderGuestSuggestionMarkers()}
 
                 {/* Feedback Popover */}
                 <AnimatePresence>
@@ -557,9 +744,10 @@ export default function AppViewer() {
                       </div>
                       <textarea
                         value={feedbackText}
-                        onChange={(e) => setFeedbackText(e.target.value)}
+                        onChange={(e) => setFeedbackText(e.target.value.slice(0, 500))}
                         className="w-full bg-slate-50 border-none rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 placeholder:text-slate-400 min-h-20 resize-none"
-                        placeholder="Descreva o problema..."
+                        placeholder="Descreva sua observação..."
+                        maxLength={500}
                       />
                       <div className="flex items-center gap-2 mt-3">
                         <select
@@ -580,10 +768,10 @@ export default function AppViewer() {
                           Cancelar
                         </button>
                         <button
-                          onClick={handleSaveIssue}
+                          onClick={isPublicFeedback ? handleSaveGuestSuggestion : handleSaveIssue}
                           className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white shadow-sm active:scale-95 transition-transform"
                         >
-                          Salvar Issue
+                          Salvar
                         </button>
                       </div>
                     </motion.div>
@@ -638,8 +826,11 @@ export default function AppViewer() {
                     </div>
                   ))}
 
-                  {/* Issue Markers */}
-                  {renderScreenIssueMarkers()}
+                  {/* Issue Markers (admin only) */}
+                  {!isPublicFeedback && renderScreenIssueMarkers()}
+
+                  {/* Guest Suggestion Markers */}
+                  {renderGuestSuggestionMarkers()}
 
                   {/* Feedback Popover */}
                   <AnimatePresence>
@@ -660,9 +851,10 @@ export default function AppViewer() {
                         </div>
                         <textarea
                           value={feedbackText}
-                          onChange={(e) => setFeedbackText(e.target.value)}
+                          onChange={(e) => setFeedbackText(e.target.value.slice(0, 500))}
                           className="w-full bg-slate-50 border-none rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 placeholder:text-slate-400 min-h-20 resize-none"
-                          placeholder="Descreva o problema..."
+                          placeholder="Descreva sua observação..."
+                          maxLength={500}
                         />
                         <div className="flex items-center gap-2 mt-3">
                           <select
@@ -683,10 +875,10 @@ export default function AppViewer() {
                             Cancelar
                           </button>
                           <button
-                            onClick={handleSaveIssue}
+                            onClick={isPublicFeedback ? handleSaveGuestSuggestion : handleSaveIssue}
                             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white shadow-sm active:scale-95 transition-transform"
                           >
-                            Salvar Issue
+                            Salvar
                           </button>
                         </div>
                       </motion.div>
@@ -703,155 +895,247 @@ export default function AppViewer() {
           )}
         </section>
 
-        {/* Right Drawer: Issues */}
+        {/* Right Drawer */}
         <aside className="w-80 min-h-0 h-full bg-white flex flex-col border-l border-slate-200">
           <div className="p-6 border-b border-slate-200">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="font-bold text-lg text-slate-900">Observações (Issues)</h2>
+              <h2 className="font-bold text-lg text-slate-900">
+                {isPublicFeedback ? 'Suas Observações' : 'Observações'}
+              </h2>
               <span className="bg-blue-50 text-blue-600 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {screenIssues.length.toString().padStart(2, '0')}
+                {(isPublicFeedback
+                  ? screenGuestSuggestions.length
+                  : screenIssues.length + screenGuestSuggestions.length
+                ).toString().padStart(2, '0')}
               </span>
             </div>
-            <p className="text-xs text-slate-500">Feedback registrado pelos stakeholders</p>
+            <p className="text-xs text-slate-500">
+              {isPublicFeedback
+                ? `Olá, ${guestSession?.guestName ?? ''}! Dê duplo clique para registrar.`
+                : 'Issues e sugestões de convidados desta tela'}
+            </p>
           </div>
-          
+
           <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 custom-scroll">
-            {screenIssues.length > 0 ? screenIssues.map((issue) => {
+            {/* Issues autenticadas (apenas admin) */}
+            {!isPublicFeedback && screenIssues.map((issue) => {
               const isEditing = editingIssueId === issue.id;
               const loading = issueActionLoadingId === issue.id;
               const showActions = canManageIssue(issue);
               return (
-              <div 
-                key={issue.id}
-                className={`bg-white p-4 rounded-xl shadow-sm border-l-4 hover:shadow-md transition-shadow ${
-                  issue.priority === 'High' ? 'border-red-500' : issue.priority === 'Medium' ? 'border-blue-500' : 'border-slate-300'
-                }`}
-              >
-                <div className="flex justify-between items-start mb-2 gap-2">
-                  {!isEditing ? (
-                    <span className={`text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded ${
-                      issue.priority === 'High' ? 'bg-red-50 text-red-600' : issue.priority === 'Medium' ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-500'
-                    }`}>
-                      {issue.priority === 'High' ? 'Alta Prioridade' : issue.priority === 'Medium' ? 'Prioridade Média' : 'Sugestão'}
+                <div
+                  key={issue.id}
+                  className={`bg-white p-4 rounded-xl shadow-sm border-l-4 hover:shadow-md transition-shadow ${
+                    issue.priority === 'High' ? 'border-red-500' : issue.priority === 'Medium' ? 'border-blue-500' : 'border-slate-300'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2 gap-2">
+                    {!isEditing ? (
+                      <span className={`text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded ${
+                        issue.priority === 'High' ? 'bg-red-50 text-red-600' : issue.priority === 'Medium' ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-500'
+                      }`}>
+                        {issue.priority === 'High' ? 'Alta Prioridade' : issue.priority === 'Medium' ? 'Prioridade Média' : 'Sugestão'}
+                      </span>
+                    ) : (
+                      <select
+                        value={editIssuePriority}
+                        onChange={(e) => setEditIssuePriority(e.target.value as 'Low' | 'Medium' | 'High')}
+                        className="flex-1 max-w-[140px] bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-bold py-1.5 px-2 focus:ring-1 focus:ring-blue-600"
+                      >
+                        <option value="Low">Baixa</option>
+                        <option value="Medium">Média</option>
+                        <option value="High">Alta</option>
+                      </select>
+                    )}
+                    <span className="text-[10px] text-slate-400 shrink-0">
+                      <Clock className="w-2 h-2 inline mr-1" />
+                      {issue.createdAt?.toDate().toLocaleDateString()}
                     </span>
-                  ) : (
-                    <select
-                      value={editIssuePriority}
-                      onChange={(e) => setEditIssuePriority(e.target.value as 'Low' | 'Medium' | 'High')}
-                      className="flex-1 max-w-[140px] bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-bold py-1.5 px-2 focus:ring-1 focus:ring-blue-600"
-                    >
-                      <option value="Low">Baixa</option>
-                      <option value="Medium">Média</option>
-                      <option value="High">Alta</option>
-                    </select>
-                  )}
-                  <span className="text-[10px] text-slate-400 shrink-0">
-                    <Clock className="w-2 h-2 inline mr-1" />
-                    {issue.createdAt?.toDate().toLocaleDateString()}
-                  </span>
-                </div>
-                {isEditing ? (
-                  <textarea
-                    value={editIssueText}
-                    onChange={(e) => setEditIssueText(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 min-h-20 resize-none mb-3"
-                    placeholder="Descreva o problema..."
-                  />
-                ) : (
-                  <p className="text-sm font-medium text-slate-800 mb-2">{issue.text}</p>
-                )}
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-700 shrink-0">
-                      {issue.authorName.charAt(0)}
-                    </div>
-                    <span className="text-[10px] text-slate-500 truncate">Relatado por {issue.authorName}</span>
                   </div>
-                  {showActions && !isEditing && (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => startEditIssue(issue)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                        Editar
-                      </button>
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => void handleDeleteIssue(issue.id)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Deletar
-                      </button>
-                    </div>
+                  {isEditing ? (
+                    <textarea
+                      value={editIssueText}
+                      onChange={(e) => setEditIssueText(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 min-h-20 resize-none mb-3"
+                      placeholder="Descreva o problema..."
+                    />
+                  ) : (
+                    <p className="text-sm font-medium text-slate-800 mb-2">{issue.text}</p>
                   )}
-                  {showActions && isEditing && (
-                    <div className="flex items-center gap-2 w-full justify-end mt-1">
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={cancelEditIssue}
-                        className="px-2.5 py-1 rounded-lg text-[11px] font-medium text-slate-500 hover:bg-slate-100 disabled:opacity-50"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="button"
-                        disabled={loading || !editIssueText.trim()}
-                        onClick={() => void handleUpdateIssue(issue.id)}
-                        className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        {loading ? 'Salvando…' : 'Salvar'}
-                      </button>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-700 shrink-0">
+                        {issue.authorName.charAt(0)}
+                      </div>
+                      <span className="text-[10px] text-slate-500 truncate">Por {issue.authorName}</span>
                     </div>
-                  )}
+                    {showActions && !isEditing && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => startEditIssue(issue)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void handleDeleteIssue(issue.id)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Deletar
+                        </button>
+                      </div>
+                    )}
+                    {showActions && isEditing && (
+                      <div className="flex items-center gap-2 w-full justify-end mt-1">
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={cancelEditIssue}
+                          className="px-2.5 py-1 rounded-lg text-[11px] font-medium text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          disabled={loading || !editIssueText.trim()}
+                          onClick={() => void handleUpdateIssue(issue.id)}
+                          className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {loading ? 'Salvando…' : 'Salvar'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-            }) : (
-              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-center p-8">
+              );
+            })}
+
+            {/* Sugestões de convidados */}
+            {screenGuestSuggestions.map((suggestion) => {
+              const loading = issueActionLoadingId === suggestion.id;
+              return (
+                <div
+                  key={suggestion.id}
+                  className={`bg-white p-4 rounded-xl shadow-sm border-l-4 hover:shadow-md transition-shadow ${
+                    suggestion.priority === 'High'
+                      ? 'border-orange-400'
+                      : suggestion.priority === 'Medium'
+                        ? 'border-amber-400'
+                        : 'border-amber-300'
+                  } ${suggestion.status === 'Resolved' ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex justify-between items-start mb-2 gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded bg-amber-50 text-amber-700">
+                        Convidado
+                      </span>
+                      <span className={`text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded ${
+                        suggestion.priority === 'High'
+                          ? 'bg-red-50 text-red-600'
+                          : suggestion.priority === 'Medium'
+                            ? 'bg-blue-50 text-blue-600'
+                            : 'bg-slate-50 text-slate-500'
+                      }`}>
+                        {suggestion.priority === 'High' ? 'Alta' : suggestion.priority === 'Medium' ? 'Média' : 'Baixa'}
+                      </span>
+                      {suggestion.status === 'Resolved' && (
+                        <span className="text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded bg-emerald-50 text-emerald-600">
+                          Resolvido
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-400 shrink-0">
+                      <Clock className="w-2 h-2 inline mr-1" />
+                      {suggestion.createdAt?.toDate().toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-sm font-medium text-slate-800 mb-2">{suggestion.text}</p>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center text-[10px] font-bold text-amber-700 shrink-0">
+                        {suggestion.guestName.charAt(0)}
+                      </div>
+                      <span className="text-[10px] text-slate-500 truncate">{suggestion.guestName}</span>
+                    </div>
+                    {!isPublicFeedback && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void handleToggleGuestSuggestionStatus(suggestion)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          {suggestion.status === 'Open' ? 'Resolver' : 'Reabrir'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void handleDeleteGuestSuggestion(suggestion.id)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Deletar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Estado vazio */}
+            {(isPublicFeedback ? screenGuestSuggestions.length === 0 : screenIssues.length + screenGuestSuggestions.length === 0) && (
+              <div className="flex flex-col items-center justify-center min-h-[120px] text-slate-400 text-center p-8">
                 <MessageSquare className="w-12 h-12 mb-4 opacity-20" />
-                <p className="text-sm">Nenhum feedback registrado para esta tela.</p>
+                <p className="text-sm">
+                  {isPublicFeedback
+                    ? 'Nenhuma observação ainda. Dê duplo clique no protótipo!'
+                    : 'Nenhum feedback registrado para esta tela.'}
+                </p>
               </div>
             )}
+
           </div>
 
-          <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 py-3">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
-              Tutorial
-            </h3>
-            <p className="text-[10px] text-slate-500 mb-2.5 leading-relaxed">
-              Progresso salvo neste navegador; os itens marcam conforme você usa o feedback.
-            </p>
-            <ul className="space-y-2">
-              {VIEWER_FEEDBACK_TUTORIAL_STEPS.map((text, i) => {
-                const done = feedbackTutorialChecks[i];
-                return (
-                  <li key={i} className="flex gap-2.5 items-start">
-                    <span
-                      className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
-                        done ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'
-                      }`}
-                      aria-hidden
-                    >
-                      {done && <Check className="w-2.5 h-2.5 text-white stroke-3" />}
-                    </span>
-                    <span
-                      className={`text-[11px] leading-snug ${
-                        done ? 'text-slate-500 line-through' : 'text-slate-700'
-                      }`}
-                    >
-                      <span className="font-semibold text-slate-600 tabular-nums">{i + 1}.</span> {text}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
+          {/* Tutorial (apenas no modo guest) */}
+          {isPublicFeedback && (
+            <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                Como usar
+              </h3>
+              <ul className="space-y-2">
+                {VIEWER_FEEDBACK_TUTORIAL_STEPS.map((text, i) => {
+                  const done = feedbackTutorialChecks[i];
+                  return (
+                    <li key={i} className="flex gap-2.5 items-start">
+                      <span
+                        className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                          done ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'
+                        }`}
+                        aria-hidden
+                      >
+                        {done && <Check className="w-2.5 h-2.5 text-white stroke-3" />}
+                      </span>
+                      <span
+                        className={`text-[11px] leading-snug ${
+                          done ? 'text-slate-500 line-through' : 'text-slate-700'
+                        }`}
+                      >
+                        <span className="font-semibold text-slate-600 tabular-nums">{i + 1}.</span> {text}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           {isPublicFeedback ? (
             <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
@@ -864,7 +1148,7 @@ export default function AppViewer() {
               </button>
             </div>
           ) : (
-            <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
+            <div className="shrink-0 border-t border-slate-200 p-4 bg-white space-y-2">
               <button
                 type="button"
                 onClick={() => void handlePublish()}
@@ -880,10 +1164,45 @@ export default function AppViewer() {
                   'Publicar'
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => appId && navigate(`/apps/${appId}/report`)}
+                className="w-full flex items-center justify-center gap-2 border border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-50 transition-all"
+              >
+                <ClipboardList className="h-4 w-4 shrink-0 opacity-80" />
+                Relatório
+              </button>
             </div>
           )}
         </aside>
       </main>
+
+      {/* Modal de nome do convidado (bloqueante) */}
+      {showGuestNameModal && (
+        <GuestNameModal
+          appName={app?.name}
+          onConfirm={(name) => {
+            if (!appId) return;
+            const session = createGuestSession(appId, name);
+            setGuestSession(session);
+            setShowGuestNameModal(false);
+          }}
+        />
+      )}
+
+      {/* Aviso de rate limit */}
+      <AnimatePresence>
+        {rateLimitWarning && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-5 py-3 rounded-xl shadow-xl text-sm font-medium"
+          >
+            Limite de observações atingido. Tente novamente em 1 hora.
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Hint Overlay */}
       <AnimatePresence>
@@ -919,6 +1238,9 @@ export default function AppViewer() {
       <FeedbackThankYouModal
         isOpen={feedbackCompleteOpen}
         appName={app?.name}
+        appId={appId}
+        userName={guestSession?.guestName ?? auth.currentUser?.displayName ?? 'Anônimo'}
+        sessionIssueIds={sessionIssueIds}
         onClose={() => setFeedbackCompleteOpen(false)}
       />
     </div>

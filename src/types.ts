@@ -45,3 +45,35 @@ export interface IssueData {
   priority: 'Low' | 'Medium' | 'High';
   status: 'Open' | 'Resolved';
 }
+
+export interface GuestSuggestionData {
+  id: string;
+  appId: string;
+  screenId: string;
+  guestId: string;
+  guestName: string;
+  text: string;
+  x: number;
+  y: number;
+  createdAt: Timestamp;
+  priority: 'Low' | 'Medium' | 'High';
+  status: 'Open' | 'Resolved';
+  source: 'guest';
+}
+
+export interface GuestSession {
+  guestId: string;
+  guestName: string;
+  appId: string;
+  createdAt: number;
+}
+
+export interface NpsResponseData {
+  id: string;
+  appId: string;
+  userName: string;
+  score: number;
+  classification: 'detractor' | 'neutral' | 'promoter';
+  issueIds: string[];
+  createdAt: Timestamp;
+}
