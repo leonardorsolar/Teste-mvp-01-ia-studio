@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
+import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData, IssueData } from '../types';
 import { 
   ArrowLeft, 
+  ChevronLeft,
+  ChevronRight,
   Eye, 
   Info, 
   X, 
@@ -11,10 +13,13 @@ import {
   Clock,
   MessageSquare,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Pencil,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jumpadLogoDark from '../assets/images/jumpad-logo-dark.svg';
+import PublishSuccessModal from '../components/PublishSuccessModal';
 
 export default function AppViewer() {
   const { appId } = useParams();
@@ -31,7 +36,26 @@ export default function AppViewer() {
   const [feedbackPriority, setFeedbackPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [showHint, setShowHint] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [publishSuccessOpen, setPublishSuccessOpen] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [editingIssueId, setEditingIssueId] = useState<string | null>(null);
+  const [editIssueText, setEditIssueText] = useState('');
+  const [editIssuePriority, setEditIssuePriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
+  const [issueActionLoadingId, setIssueActionLoadingId] = useState<string | null>(null);
+  const [issueDragLive, setIssueDragLive] = useState<{ issueId: string; x: number; y: number } | null>(null);
+  const draggingIssueIdRef = useRef<string | null>(null);
+  const issueDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const issueDragLiveRef = useRef<{ issueId: string; x: number; y: number } | null>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
+
+  const canManageIssue = useCallback(
+    (issue: IssueData) => {
+      const u = auth.currentUser;
+      if (!u) return false;
+      return issue.authorId === u.uid || app?.ownerId === u.uid;
+    },
+    [app?.ownerId]
+  );
 
   useEffect(() => {
     if (appId) {
@@ -82,12 +106,40 @@ export default function AppViewer() {
     }
   };
 
+  const currentScreenIndex = screens.findIndex((s) => s.id === currentScreenId);
+  const canGoToPrevScreen = currentScreenIndex > 0;
+  const canGoToNextScreen =
+    currentScreenIndex >= 0 && currentScreenIndex < screens.length - 1;
+
+  const goToPrevScreen = () => {
+    if (!canGoToPrevScreen) return;
+    setCurrentScreenId(screens[currentScreenIndex - 1].id);
+  };
+
+  const goToNextScreen = () => {
+    if (!canGoToNextScreen) return;
+    setCurrentScreenId(screens[currentScreenIndex + 1].id);
+  };
+
   const handleDoubleClick = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     setFeedbackPos({ x, y });
     setIsFeedbackMode(true);
+  };
+
+  const handlePublish = async () => {
+    if (!appId || isPublishing) return;
+    setIsPublishing(true);
+    try {
+      await updateDoc(doc(db, 'apps', appId), { status: 'Published' });
+      setPublishSuccessOpen(true);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'apps');
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   const handleSaveIssue = async () => {
@@ -114,6 +166,107 @@ export default function AppViewer() {
     }
   };
 
+  const startEditIssue = (issue: IssueData) => {
+    setEditingIssueId(issue.id);
+    setEditIssueText(issue.text);
+    setEditIssuePriority(issue.priority);
+  };
+
+  const cancelEditIssue = () => {
+    setEditingIssueId(null);
+    setEditIssueText('');
+  };
+
+  const handleUpdateIssue = async (issueId: string) => {
+    if (!appId || !editIssueText.trim()) return;
+    setIssueActionLoadingId(issueId);
+    try {
+      await updateDoc(doc(db, `apps/${appId}/issues`, issueId), {
+        text: editIssueText.trim(),
+        priority: editIssuePriority,
+      });
+      cancelEditIssue();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'issues');
+    } finally {
+      setIssueActionLoadingId(null);
+    }
+  };
+
+  const handleDeleteIssue = async (issueId: string) => {
+    if (!appId) return;
+    if (!window.confirm('Excluir este feedback permanentemente?')) return;
+    setIssueActionLoadingId(issueId);
+    try {
+      await deleteDoc(doc(db, `apps/${appId}/issues`, issueId));
+      if (editingIssueId === issueId) cancelEditIssue();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'issues');
+    } finally {
+      setIssueActionLoadingId(null);
+    }
+  };
+
+  const pointToPercent = (rect: DOMRect, clientX: number, clientY: number) => {
+    const x = Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100));
+    const y = Math.min(100, Math.max(0, ((clientY - rect.top) / rect.height) * 100));
+    return { x, y };
+  };
+
+  const handleIssueMarkerPointerDown = (e: React.PointerEvent<HTMLDivElement>, issue: IssueData) => {
+    if (!canManageIssue(issue) || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget;
+    const viewport = el.closest('[data-prototype-viewport]');
+    if (!viewport) return;
+    el.setPointerCapture(e.pointerId);
+    draggingIssueIdRef.current = issue.id;
+    issueDragStartRef.current = { x: issue.x, y: issue.y };
+    issueDragLiveRef.current = { issueId: issue.id, x: issue.x, y: issue.y };
+  };
+
+  const handleIssueMarkerPointerMove = (e: React.PointerEvent<HTMLDivElement>, issue: IssueData) => {
+    if (draggingIssueIdRef.current !== issue.id) return;
+    e.preventDefault();
+    const viewport = e.currentTarget.closest('[data-prototype-viewport]') as HTMLElement | null;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const p = pointToPercent(rect, e.clientX, e.clientY);
+    issueDragLiveRef.current = { issueId: issue.id, ...p };
+    setIssueDragLive({ issueId: issue.id, ...p });
+  };
+
+  const finishIssueMarkerDrag = (e: React.PointerEvent<HTMLDivElement>, issue: IssueData) => {
+    if (draggingIssueIdRef.current !== issue.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* já liberado */
+    }
+    draggingIssueIdRef.current = null;
+    const start = issueDragStartRef.current;
+    const final = issueDragLiveRef.current;
+    issueDragStartRef.current = null;
+    issueDragLiveRef.current = null;
+    setIssueDragLive(null);
+
+    if (!appId || !final || !start) return;
+    const moved =
+      Math.abs(final.x - start.x) > 0.25 || Math.abs(final.y - start.y) > 0.25;
+    if (!moved) return;
+
+    void (async () => {
+      try {
+        await updateDoc(doc(db, `apps/${appId}/issues`, issue.id), { x: final.x, y: final.y });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, 'issues');
+      }
+    })();
+  };
+
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
       viewerRef.current?.requestFullscreen();
@@ -130,6 +283,34 @@ export default function AppViewer() {
 
   const currentScreen = screens.find(s => s.id === currentScreenId);
   const screenIssues = issues.filter(i => i.screenId === currentScreenId);
+
+  const renderScreenIssueMarkers = () =>
+    screenIssues.map((issue) => {
+      const live = issueDragLive?.issueId === issue.id ? issueDragLive : null;
+      const lx = live ? live.x : issue.x;
+      const ly = live ? live.y : issue.y;
+      const draggable = canManageIssue(issue);
+      return (
+        <div
+          key={issue.id}
+          className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white z-10 touch-none select-none ${
+            issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
+          } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          style={{ left: `${lx}%`, top: `${ly}%` }}
+          title={
+            draggable
+              ? `${issue.text} — Segure e arraste para mover`
+              : issue.text
+          }
+          onPointerDown={draggable ? (e) => handleIssueMarkerPointerDown(e, issue) : undefined}
+          onPointerMove={draggable ? (e) => handleIssueMarkerPointerMove(e, issue) : undefined}
+          onPointerUp={draggable ? (e) => finishIssueMarkerDrag(e, issue) : undefined}
+          onPointerCancel={draggable ? (e) => finishIssueMarkerDrag(e, issue) : undefined}
+        >
+          !
+        </div>
+      );
+    });
 
   return (
     <div ref={viewerRef} className="min-h-screen bg-slate-50 flex flex-col overflow-hidden">
@@ -151,6 +332,28 @@ export default function AppViewer() {
           <div className="flex items-center bg-slate-100 px-4 py-2 rounded-full gap-2 text-slate-500">
             <Eye className="w-4 h-4" />
             <span className="text-xs font-medium">Modo de Teste Ativo</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={goToPrevScreen}
+              disabled={!canGoToPrevScreen}
+              title="Tela anterior (ordem do fluxo)"
+              className="flex items-center gap-1.5 bg-white border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 transition-all disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <ChevronLeft className="w-4 h-4 shrink-0" />
+              <span className="text-xs">Retornar</span>
+            </button>
+            <button
+              type="button"
+              onClick={goToNextScreen}
+              disabled={!canGoToNextScreen}
+              title="Próxima tela (ordem do fluxo)"
+              className="flex items-center gap-1.5 bg-white border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 transition-all disabled:opacity-40 disabled:pointer-events-none"
+            >
+              <span className="text-xs">Avançar</span>
+              <ChevronRight className="w-4 h-4 shrink-0" />
+            </button>
           </div>
           <button
             onClick={toggleFullscreen}
@@ -201,6 +404,7 @@ export default function AppViewer() {
 
               {/* Screen Content */}
               <div
+                data-prototype-viewport
                 className="relative cursor-pointer flex-1 min-h-0"
                 onDoubleClick={handleDoubleClick}
               >
@@ -234,18 +438,7 @@ export default function AppViewer() {
                 ))}
 
                 {/* Issue Markers */}
-                {screenIssues.map((issue) => (
-                  <div
-                    key={issue.id}
-                    className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white ${
-                      issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
-                    }`}
-                    style={{ left: `${issue.x}%`, top: `${issue.y}%` }}
-                    title={issue.text}
-                  >
-                    !
-                  </div>
-                ))}
+                {renderScreenIssueMarkers()}
 
                 {/* Feedback Popover */}
                 <AnimatePresence>
@@ -314,6 +507,7 @@ export default function AppViewer() {
 
                 {/* Screen Content */}
                 <div
+                  data-prototype-viewport
                   className="flex-1 relative cursor-pointer"
                   onDoubleClick={handleDoubleClick}
                 >
@@ -347,18 +541,7 @@ export default function AppViewer() {
                   ))}
 
                   {/* Issue Markers */}
-                  {screenIssues.map((issue) => (
-                    <div
-                      key={issue.id}
-                      className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white ${
-                        issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
-                      }`}
-                      style={{ left: `${issue.x}%`, top: `${issue.y}%` }}
-                      title={issue.text}
-                    >
-                      !
-                    </div>
-                  ))}
+                  {renderScreenIssueMarkers()}
 
                   {/* Feedback Popover */}
                   <AnimatePresence>
@@ -435,38 +618,126 @@ export default function AppViewer() {
           </div>
           
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 custom-scroll">
-            {screenIssues.length > 0 ? screenIssues.map((issue) => (
+            {screenIssues.length > 0 ? screenIssues.map((issue) => {
+              const isEditing = editingIssueId === issue.id;
+              const loading = issueActionLoadingId === issue.id;
+              const showActions = canManageIssue(issue);
+              return (
               <div 
                 key={issue.id}
-                className={`bg-white p-4 rounded-xl shadow-sm border-l-4 hover:shadow-md transition-shadow cursor-pointer ${
+                className={`bg-white p-4 rounded-xl shadow-sm border-l-4 hover:shadow-md transition-shadow ${
                   issue.priority === 'High' ? 'border-red-500' : issue.priority === 'Medium' ? 'border-blue-500' : 'border-slate-300'
                 }`}
               >
-                <div className="flex justify-between items-start mb-2">
-                  <span className={`text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded ${
-                    issue.priority === 'High' ? 'bg-red-50 text-red-600' : issue.priority === 'Medium' ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-500'
-                  }`}>
-                    {issue.priority === 'High' ? 'Alta Prioridade' : issue.priority === 'Medium' ? 'Prioridade Média' : 'Sugestão'}
-                  </span>
-                  <span className="text-[10px] text-slate-400">
+                <div className="flex justify-between items-start mb-2 gap-2">
+                  {!isEditing ? (
+                    <span className={`text-[10px] font-bold uppercase tracking-tighter px-2 py-0.5 rounded ${
+                      issue.priority === 'High' ? 'bg-red-50 text-red-600' : issue.priority === 'Medium' ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-500'
+                    }`}>
+                      {issue.priority === 'High' ? 'Alta Prioridade' : issue.priority === 'Medium' ? 'Prioridade Média' : 'Sugestão'}
+                    </span>
+                  ) : (
+                    <select
+                      value={editIssuePriority}
+                      onChange={(e) => setEditIssuePriority(e.target.value as 'Low' | 'Medium' | 'High')}
+                      className="flex-1 max-w-[140px] bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-bold py-1.5 px-2 focus:ring-1 focus:ring-blue-600"
+                    >
+                      <option value="Low">Baixa</option>
+                      <option value="Medium">Média</option>
+                      <option value="High">Alta</option>
+                    </select>
+                  )}
+                  <span className="text-[10px] text-slate-400 shrink-0">
                     <Clock className="w-2 h-2 inline mr-1" />
                     {issue.createdAt?.toDate().toLocaleDateString()}
                   </span>
                 </div>
-                <p className="text-sm font-medium text-slate-800 mb-2">{issue.text}</p>
-                <div className="flex items-center gap-2">
-                  <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-700">
-                    {issue.authorName.charAt(0)}
+                {isEditing ? (
+                  <textarea
+                    value={editIssueText}
+                    onChange={(e) => setEditIssueText(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 min-h-20 resize-none mb-3"
+                    placeholder="Descreva o problema..."
+                  />
+                ) : (
+                  <p className="text-sm font-medium text-slate-800 mb-2">{issue.text}</p>
+                )}
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-700 shrink-0">
+                      {issue.authorName.charAt(0)}
+                    </div>
+                    <span className="text-[10px] text-slate-500 truncate">Relatado por {issue.authorName}</span>
                   </div>
-                  <span className="text-[10px] text-slate-500">Relatado por {issue.authorName}</span>
+                  {showActions && !isEditing && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => startEditIssue(issue)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => void handleDeleteIssue(issue.id)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Deletar
+                      </button>
+                    </div>
+                  )}
+                  {showActions && isEditing && (
+                    <div className="flex items-center gap-2 w-full justify-end mt-1">
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={cancelEditIssue}
+                        className="px-2.5 py-1 rounded-lg text-[11px] font-medium text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        disabled={loading || !editIssueText.trim()}
+                        onClick={() => void handleUpdateIssue(issue.id)}
+                        className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {loading ? 'Salvando…' : 'Salvar'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
-            )) : (
+            );
+            }) : (
               <div className="flex flex-col items-center justify-center h-full text-slate-400 text-center p-8">
                 <MessageSquare className="w-12 h-12 mb-4 opacity-20" />
                 <p className="text-sm">Nenhum feedback registrado para esta tela.</p>
               </div>
             )}
+          </div>
+
+          <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
+            <button
+              type="button"
+              onClick={() => void handlePublish()}
+              disabled={isPublishing}
+              className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all disabled:opacity-60 disabled:pointer-events-none"
+            >
+              {isPublishing ? (
+                <>
+                  <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
+                  Publicando…
+                </>
+              ) : (
+                'Publicar'
+              )}
+            </button>
           </div>
         </aside>
       </main>
@@ -491,6 +762,16 @@ export default function AppViewer() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <PublishSuccessModal
+        isOpen={publishSuccessOpen}
+        appName={app?.name}
+        onClose={() => setPublishSuccessOpen(false)}
+        onGoHome={() => {
+          setPublishSuccessOpen(false);
+          navigate('/');
+        }}
+      />
     </div>
   );
 }

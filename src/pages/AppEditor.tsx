@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, getDocs, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData } from '../types';
@@ -39,7 +40,8 @@ export default function AppEditor() {
   const [currentHotspot, setCurrentHotspot] = useState<Partial<HotspotData> | null>(null);
   const [showHotspotPopover, setShowHotspotPopover] = useState(false);
   const [pendingHotspot, setPendingHotspot] = useState<Partial<HotspotData> | null>(null);
-  const [popoverPos, setPopoverPos] = useState({ x: 0, y: 0 });
+  /** Posição em px (viewport) para o popover em portal — evita recorte por overflow-hidden do canvas */
+  const [hotspotPopoverFixed, setHotspotPopoverFixed] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     if (appId && appId !== 'new') {
@@ -96,6 +98,54 @@ export default function AppEditor() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedHotspotId, showHotspotPopover]);
+
+  useLayoutEffect(() => {
+    if (!showHotspotPopover || !pendingHotspot) {
+      setHotspotPopoverFixed(null);
+      return;
+    }
+    const { x, y, width, height } = pendingHotspot;
+    if (x == null || y == null || width == null || height == null) {
+      setHotspotPopoverFixed(null);
+      return;
+    }
+
+    const POPOVER_W = 288;
+    const POPOVER_H = 280;
+    const PAD = 12;
+    const GAP = 8;
+
+    const updatePosition = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const r = canvas.getBoundingClientRect();
+      const anchorLeft = r.left + ((x + width) / 100) * r.width;
+      const anchorTop = r.top + ((y + height) / 100) * r.height;
+
+      let left = anchorLeft;
+      let top = anchorTop + GAP;
+
+      if (left + POPOVER_W > window.innerWidth - PAD) {
+        left = Math.max(PAD, window.innerWidth - PAD - POPOVER_W);
+      }
+      if (left < PAD) left = PAD;
+
+      if (top + POPOVER_H > window.innerHeight - PAD) {
+        top = anchorTop - POPOVER_H - GAP;
+      }
+      if (top < PAD) top = PAD;
+
+      setHotspotPopoverFixed({ left, top });
+    };
+
+    updatePosition();
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [showHotspotPopover, pendingHotspot]);
 
   const handleCreateAppFromModal = async (data: NewAppFormData) => {
     if (!auth.currentUser) return;
@@ -230,12 +280,6 @@ export default function AppEditor() {
       label: ''
     };
     setPendingHotspot(hotspotData);
-    
-    setPopoverPos({
-      x: hotspot.x! + hotspot.width!,
-      y: hotspot.y! + hotspot.height!
-    });
-    
     setShowHotspotPopover(true);
     setCurrentHotspot(null);
     // Mantemos isDrawingMode como true para permitir criar vários sem re-clicar no ícone
@@ -286,21 +330,7 @@ export default function AppEditor() {
   const handleEditHotspot = (hotspot: HotspotData) => {
     setPendingHotspot(hotspot);
     setSelectedHotspotId(hotspot.id);
-    setPopoverPos({
-      x: hotspot.x + hotspot.width,
-      y: hotspot.y + hotspot.height
-    });
     setShowHotspotPopover(true);
-  };
-
-  const handlePublish = async () => {
-    if (!appId || appId === 'new') return;
-    try {
-      await updateDoc(doc(db, 'apps', appId), { status: 'Published' });
-      alert('App publicado com sucesso!');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'apps');
-    }
   };
 
   const handleDeleteScreen = async (screenId: string, e: React.MouseEvent) => {
@@ -548,59 +578,6 @@ export default function AppEditor() {
                 </div>
               )}
 
-              {/* Hotspot Popover */}
-              <AnimatePresence>
-                {showHotspotPopover && pendingHotspot && (
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                    className="absolute z-50 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl w-72"
-                    style={{
-                      left: `${Math.min(popoverPos.x, 65)}%`,
-                      top: `${Math.min(popoverPos.y, 75)}%`
-                    }}
-                  >
-                    <div className="space-y-4">
-                      <div className="space-y-1">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ação de Navegação</span>
-                        <h3 className="text-sm font-semibold text-white">Para qual tela este clique leva?</h3>
-                      </div>
-                      
-                      <div className="space-y-3">
-                        <div className="relative">
-                          <select 
-                            value={pendingHotspot.targetScreenId}
-                            onChange={(e) => setPendingHotspot({ ...pendingHotspot, targetScreenId: e.target.value })}
-                            className="w-full bg-slate-800 border-2 border-slate-700 rounded-xl text-xs text-slate-200 py-3 px-4 focus:ring-2 focus:ring-blue-500 transition-all appearance-none cursor-pointer pr-10"
-                          >
-                            <option value="">Selecionar tela...</option>
-                            {screens.filter(s => s.id !== activeScreenId).map(s => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </select>
-                          <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                        </div>
-                      </div>
- 
-                      <div className="flex gap-3 pt-2">
-                        <button 
-                          onClick={handleCancelHotspot}
-                          className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
-                        >
-                          Cancelar
-                        </button>
-                        <button 
-                          onClick={handleSaveHotspot}
-                          className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40"
-                        >
-                          Salvar
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
           ) : (
             <div className="text-slate-500 text-center canvas-empty">
@@ -609,6 +586,67 @@ export default function AppEditor() {
             </div>
           )}
         </div>
+
+        {createPortal(
+          <AnimatePresence>
+            {showHotspotPopover && pendingHotspot && hotspotPopoverFixed && (
+              <motion.div
+                key="hotspot-nav-popover"
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                className="fixed z-[10000] bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl w-72 max-h-[min(320px,calc(100vh-24px))] overflow-y-auto"
+                style={{
+                  left: hotspotPopoverFixed.left,
+                  top: hotspotPopoverFixed.top
+                }}
+              >
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ação de Navegação</span>
+                    <h3 className="text-sm font-semibold text-white">Para qual tela este clique leva?</h3>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="relative">
+                      <select
+                        value={pendingHotspot.targetScreenId}
+                        onChange={(e) => setPendingHotspot({ ...pendingHotspot, targetScreenId: e.target.value })}
+                        className="w-full bg-slate-800 border-2 border-slate-700 rounded-xl text-xs text-slate-200 py-3 px-4 focus:ring-2 focus:ring-blue-500 transition-all appearance-none cursor-pointer pr-10"
+                      >
+                        <option value="">Selecionar tela...</option>
+                        {screens.filter((s) => s.id !== activeScreenId).map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleCancelHotspot}
+                      className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveHotspot}
+                      className="flex-1 px-4 py-2.5 rounded-xl text-[11px] font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all shadow-lg shadow-blue-900/40"
+                    >
+                      Salvar
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body
+        )}
 
         {/* Bottom Bar */}
         <div className="h-12 bg-slate-900 border-t border-slate-800 flex items-center justify-between px-6">
@@ -619,13 +657,13 @@ export default function AppEditor() {
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <button 
+            <button
               type="button"
-              onClick={handlePublish}
-              disabled={isCreatingApp}
+              onClick={() => appId && appId !== 'new' && navigate(`/apps/${appId}/view`)}
+              disabled={!appId || appId === 'new' || isCreatingApp}
               className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all disabled:opacity-40 disabled:pointer-events-none"
             >
-              Publicar App
+              Visualização
             </button>
           </div>
         </div>
