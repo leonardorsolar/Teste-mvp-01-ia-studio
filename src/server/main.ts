@@ -5,29 +5,12 @@ import { AppModule } from './app.module';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initializeApp, getApps } from 'firebase-admin/app';
-import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function bootstrap() {
   try {
-    // Initialize Firebase Admin
-    const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(configPath)) {
-      const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (getApps().length === 0) {
-        initializeApp({
-          projectId: firebaseConfig.projectId,
-          storageBucket: firebaseConfig.storageBucket,
-        });
-        console.log('Firebase Admin initialized with bucket:', firebaseConfig.storageBucket);
-      }
-    } else {
-      console.warn('firebase-applet-config.json not found, skipping admin initialization');
-    }
-
     const app = await NestFactory.create<NestExpressApplication>(AppModule);
     const PORT = 3000;
 

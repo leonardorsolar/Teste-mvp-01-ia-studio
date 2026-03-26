@@ -1,31 +1,110 @@
 import React, { useState, useRef } from 'react';
 import { X, ArrowLeft, Monitor, Smartphone, Upload, RotateCcw, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { storage, ref, uploadBytes, getDownloadURL } from '../firebase';
 
 interface NewScreenModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (screen: { name: string; deviceType: 'Mobile' | 'Desktop'; imageUrl: string }) => void;
+  onAdd: (screen: { name: string; device: 'mobile' | 'desktop'; imageUrl: string }) => void | Promise<void>;
+}
+
+const MAX_BASE64_CHARS = 900_000;
+
+const estimateBase64Bytes = (dataUrl: string) => {
+  const base64 = dataUrl.split(',')[1] ?? '';
+  return Math.floor((base64.length * 3) / 4);
+};
+
+const loadImageFromFile = (file: File): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Não foi possível carregar a imagem selecionada.'));
+    };
+    img.src = url;
+  });
+
+async function compressToDataUrl(file: File, deviceType: 'Mobile' | 'Desktop'): Promise<string> {
+  const image = await loadImageFromFile(file);
+  const initialMaxWidth = deviceType === 'Mobile' ? 1080 : 1600;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Não foi possível preparar a imagem para upload.');
+  }
+
+  const formats: Array<'image/webp' | 'image/jpeg'> = ['image/webp', 'image/jpeg'];
+  const qualities = [0.82, 0.74, 0.66, 0.58, 0.5, 0.42, 0.36];
+
+  let downscaleFactor = 1;
+  let bestCandidate = '';
+
+  for (let attempt = 0; attempt < 7; attempt++) {
+    const maxWidth = Math.max(320, Math.round(initialMaxWidth * downscaleFactor));
+    const scale = Math.min(1, maxWidth / image.width);
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+
+    canvas.width = width;
+    canvas.height = height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+
+    for (const format of formats) {
+      for (const quality of qualities) {
+        const candidate = canvas.toDataURL(format, quality);
+        if (!bestCandidate || candidate.length < bestCandidate.length) {
+          bestCandidate = candidate;
+        }
+        if (candidate.length <= MAX_BASE64_CHARS) {
+          return candidate;
+        }
+      }
+    }
+
+    downscaleFactor *= 0.82;
+  }
+
+  throw new Error(
+    `Imagem ainda muito grande para Firestore após compactação (tam=${bestCandidate.length}). Tente uma imagem menor.`,
+  );
 }
 
 export default function NewScreenModal({ isOpen, onClose, onAdd }: NewScreenModalProps) {
   const [name, setName] = useState('');
   const [deviceType, setDeviceType] = useState<'Mobile' | 'Desktop'>('Mobile');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = (file: File) => {
+  const handleFile = async (file: File) => {
     if (file && (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/webp')) {
-      setSelectedFile(file);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setImageUrl(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+      setIsUploading(true);
+      try {
+        const compressedDataUrl = await compressToDataUrl(file, deviceType);
+        setImageUrl(compressedDataUrl);
+
+        console.log('[Screens][prepare-base64]', {
+          fileName: file.name,
+          fileType: file.type,
+          originalBytes: file.size,
+          compressedApproxBytes: estimateBase64Bytes(compressedDataUrl),
+          base64Length: compressedDataUrl.length,
+          exceedsRuleLimit: compressedDataUrl.length > MAX_BASE64_CHARS,
+        });
+      } catch (error) {
+        console.error('Erro ao compactar imagem:', error);
+        alert('Erro ao processar imagem. Tente outro arquivo.');
+      } finally {
+        setIsUploading(false);
+      }
     }
   };
 
@@ -47,35 +126,36 @@ export default function NewScreenModal({ isOpen, onClose, onAdd }: NewScreenModa
   };
 
   const handleSubmit = async () => {
-    if (name && deviceType && selectedFile) {
+    if (name && deviceType && imageUrl) {
+      if (imageUrl.length > MAX_BASE64_CHARS) {
+        alert('Imagem muito grande para salvar no Firestore. Tente outra imagem ou resolução menor.');
+        return;
+      }
+
       setIsUploading(true);
       try {
-        // Use server-side proxy to bypass CORS
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        
-        const response = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData,
+        const device = deviceType === 'Mobile' ? 'mobile' : 'desktop';
+
+        console.log('[Screens][submit]', {
+          name,
+          device,
+          imageBase64Length: imageUrl.length,
+          imageApproxBytes: estimateBase64Bytes(imageUrl),
         });
-        
-        if (!response.ok) {
-          throw new Error(`Upload failed with status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        const downloadUrl = data.url;
-        
-        onAdd({ name, deviceType, imageUrl: downloadUrl });
+
+        await onAdd({ name, device, imageUrl });
+        console.log('[Screens][submit][onAdd-resolved]');
         onClose();
         // Reset state
         setName('');
         setDeviceType('Mobile');
         setImageUrl(null);
-        setSelectedFile(null);
       } catch (error) {
-        console.error('Error uploading image:', error);
-        alert('Erro ao fazer upload da imagem via servidor. Tente novamente.');
+        console.error('Erro ao salvar tela:', error);
+        if (error instanceof Error) {
+          console.error('[Screens][submit][error-message]', error.message);
+        }
+        alert(`Erro ao salvar tela no Firestore: ${error instanceof Error ? error.message : 'erro desconhecido'}`);
       } finally {
         setIsUploading(false);
       }
@@ -85,7 +165,7 @@ export default function NewScreenModal({ isOpen, onClose, onAdd }: NewScreenModa
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-100 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <motion.div 
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}

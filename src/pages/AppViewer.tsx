@@ -140,26 +140,32 @@ export default function AppViewer() {
       <main className="flex-1 flex relative overflow-hidden">
         {/* Prototype Viewer */}
         <section className="flex-1 bg-slate-100 flex flex-col items-center justify-center p-8 relative overflow-auto custom-scroll">
-          <div className="relative w-[340px] h-[680px] bg-slate-900 rounded-[3rem] p-3 border-[8px] border-slate-800 shadow-2xl flex flex-col overflow-hidden">
-            <div className="relative flex-1 bg-white rounded-[2.2rem] overflow-hidden flex flex-col">
-              {/* Status Bar */}
-              <div className="h-8 w-full flex justify-between items-center px-6 pt-2">
-                <span className="text-[10px] font-bold">9:41</span>
-                <div className="flex gap-1">
-                  <div className="w-3 h-3 bg-slate-800 rounded-full"></div>
+          {currentScreen?.device === 'desktop' ? (
+            /* ── Desktop / Browser Frame ── */
+            <div className="relative w-full max-w-4xl bg-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col border border-slate-700">
+              {/* Browser chrome */}
+              <div className="h-10 bg-slate-700 flex items-center px-4 gap-2 shrink-0">
+                <div className="flex gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-red-400"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-400"></div>
+                </div>
+                <div className="flex-1 mx-4 bg-slate-600 rounded-md h-6 flex items-center px-3">
+                  <span className="text-[11px] text-slate-300 truncate">{app?.name || 'Protótipo'}</span>
                 </div>
               </div>
 
               {/* Screen Content */}
-              <div 
-                className="flex-1 relative cursor-pointer"
+              <div
+                className="relative cursor-pointer"
+                style={{ aspectRatio: '16/9' }}
                 onDoubleClick={handleDoubleClick}
               >
                 {currentScreen ? (
-                  <img 
-                    src={currentScreen.imageUrl} 
-                    alt={currentScreen.name} 
-                    className="w-full h-full object-cover"
+                  <img
+                    src={currentScreen.imageUrl}
+                    alt={currentScreen.name}
+                    className="w-full h-full object-contain bg-white"
                   />
                 ) : (
                   <div className="w-full h-full bg-slate-200 flex items-center justify-center">
@@ -169,7 +175,7 @@ export default function AppViewer() {
 
                 {/* Hotspots */}
                 {hotspots.map((hotspot) => (
-                  <div 
+                  <div
                     key={hotspot.id}
                     onClick={() => handleHotspotClick(hotspot.targetScreenId)}
                     className="absolute cursor-pointer hover:bg-blue-500/10 transition-colors"
@@ -186,7 +192,7 @@ export default function AppViewer() {
 
                 {/* Issue Markers */}
                 {screenIssues.map((issue) => (
-                  <div 
+                  <div
                     key={issue.id}
                     className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white ${
                       issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
@@ -201,28 +207,28 @@ export default function AppViewer() {
                 {/* Feedback Popover */}
                 <AnimatePresence>
                   {isFeedbackMode && feedbackPos && (
-                    <motion.div 
+                    <motion.div
                       initial={{ opacity: 0, scale: 0.9, y: 10 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.9, y: 10 }}
                       className="absolute bg-white rounded-xl shadow-2xl p-4 border border-blue-100 z-50 w-64"
-                      style={{ 
-                        left: `${Math.min(feedbackPos.x, 80)}%`, 
-                        top: `${Math.min(feedbackPos.y, 80)}%` 
+                      style={{
+                        left: `${Math.min(feedbackPos.x, 80)}%`,
+                        top: `${Math.min(feedbackPos.y, 80)}%`
                       }}
                     >
                       <div className="flex items-center gap-2 mb-3">
                         <div className="w-2 h-2 rounded-full bg-blue-600"></div>
                         <span className="text-[11px] font-semibold text-blue-600 uppercase tracking-wider">Novo Feedback</span>
                       </div>
-                      <textarea 
+                      <textarea
                         value={feedbackText}
                         onChange={(e) => setFeedbackText(e.target.value)}
-                        className="w-full bg-slate-50 border-none rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 placeholder:text-slate-400 min-h-[80px] resize-none"
+                        className="w-full bg-slate-50 border-none rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 placeholder:text-slate-400 min-h-20 resize-none"
                         placeholder="Descreva o problema..."
                       />
                       <div className="flex items-center gap-2 mt-3">
-                        <select 
+                        <select
                           value={feedbackPriority}
                           onChange={(e) => setFeedbackPriority(e.target.value as any)}
                           className="flex-1 bg-slate-50 border-none rounded-lg text-[10px] font-bold py-1.5 focus:ring-1 focus:ring-blue-600"
@@ -233,13 +239,13 @@ export default function AppViewer() {
                         </select>
                       </div>
                       <div className="flex justify-end mt-3 gap-2">
-                        <button 
+                        <button
                           onClick={() => setIsFeedbackMode(false)}
                           className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100"
                         >
                           Cancelar
                         </button>
-                        <button 
+                        <button
                           onClick={handleSaveIssue}
                           className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white shadow-sm active:scale-95 transition-transform"
                         >
@@ -250,13 +256,127 @@ export default function AppViewer() {
                   )}
                 </AnimatePresence>
               </div>
+            </div>
+          ) : (
+            /* ── Mobile Phone Frame ── */
+            <div className="relative w-85 h-170 bg-slate-900 rounded-[3rem] p-3 border-8 border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+              <div className="relative flex-1 bg-white rounded-[2.2rem] overflow-hidden flex flex-col">
+                {/* Status Bar */}
+                <div className="h-8 w-full flex justify-between items-center px-6 pt-2">
+                  <span className="text-[10px] font-bold">9:41</span>
+                  <div className="flex gap-1">
+                    <div className="w-3 h-3 bg-slate-800 rounded-full"></div>
+                  </div>
+                </div>
 
-              {/* Bottom Indicator */}
-              <div className="h-6 w-full flex justify-center items-center">
-                <div className="w-28 h-1 bg-slate-200 rounded-full"></div>
+                {/* Screen Content */}
+                <div
+                  className="flex-1 relative cursor-pointer"
+                  onDoubleClick={handleDoubleClick}
+                >
+                  {currentScreen ? (
+                    <img
+                      src={currentScreen.imageUrl}
+                      alt={currentScreen.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-slate-200 flex items-center justify-center">
+                      <p className="text-slate-400 text-sm">Carregando tela...</p>
+                    </div>
+                  )}
+
+                  {/* Hotspots */}
+                  {hotspots.map((hotspot) => (
+                    <div
+                      key={hotspot.id}
+                      onClick={() => handleHotspotClick(hotspot.targetScreenId)}
+                      className="absolute cursor-pointer hover:bg-blue-500/10 transition-colors"
+                      style={{
+                        left: `${hotspot.x}%`,
+                        top: `${hotspot.y}%`,
+                        width: `${hotspot.width}%`,
+                        height: `${hotspot.height}%`
+                      }}
+                    >
+                      <div className="w-full h-full border-2 border-transparent hover:border-blue-500/40 rounded-lg"></div>
+                    </div>
+                  ))}
+
+                  {/* Issue Markers */}
+                  {screenIssues.map((issue) => (
+                    <div
+                      key={issue.id}
+                      className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white ${
+                        issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
+                      }`}
+                      style={{ left: `${issue.x}%`, top: `${issue.y}%` }}
+                      title={issue.text}
+                    >
+                      !
+                    </div>
+                  ))}
+
+                  {/* Feedback Popover */}
+                  <AnimatePresence>
+                    {isFeedbackMode && feedbackPos && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                        className="absolute bg-white rounded-xl shadow-2xl p-4 border border-blue-100 z-50 w-64"
+                        style={{
+                          left: `${Math.min(feedbackPos.x, 80)}%`,
+                          top: `${Math.min(feedbackPos.y, 80)}%`
+                        }}
+                      >
+                        <div className="flex items-center gap-2 mb-3">
+                          <div className="w-2 h-2 rounded-full bg-blue-600"></div>
+                          <span className="text-[11px] font-semibold text-blue-600 uppercase tracking-wider">Novo Feedback</span>
+                        </div>
+                        <textarea
+                          value={feedbackText}
+                          onChange={(e) => setFeedbackText(e.target.value)}
+                          className="w-full bg-slate-50 border-none rounded-lg text-sm p-3 focus:ring-1 focus:ring-blue-600 placeholder:text-slate-400 min-h-20 resize-none"
+                          placeholder="Descreva o problema..."
+                        />
+                        <div className="flex items-center gap-2 mt-3">
+                          <select
+                            value={feedbackPriority}
+                            onChange={(e) => setFeedbackPriority(e.target.value as any)}
+                            className="flex-1 bg-slate-50 border-none rounded-lg text-[10px] font-bold py-1.5 focus:ring-1 focus:ring-blue-600"
+                          >
+                            <option value="Low">Baixa</option>
+                            <option value="Medium">Média</option>
+                            <option value="High">Alta</option>
+                          </select>
+                        </div>
+                        <div className="flex justify-end mt-3 gap-2">
+                          <button
+                            onClick={() => setIsFeedbackMode(false)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            onClick={handleSaveIssue}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white shadow-sm active:scale-95 transition-transform"
+                          >
+                            Salvar Issue
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Bottom Indicator */}
+                <div className="h-6 w-full flex justify-center items-center">
+                  <div className="w-28 h-1 bg-slate-200 rounded-full"></div>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </section>
 
         {/* Right Drawer: Issues */}

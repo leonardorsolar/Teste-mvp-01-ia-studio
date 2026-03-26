@@ -74,10 +74,11 @@ service cloud.firestore {
 
     function isValidScreen(data) {
       return data.appId is string &&
-             data.imageUrl is string && data.imageUrl.size() < 2048 &&
-             data.order is number &&
-             data.name is string && data.name.size() < 100 &&
-             data.deviceType in ['Mobile', 'Desktop'];
+             data.imageUrl is string && data.imageUrl.size() > 0 && data.imageUrl.size() < 900000 &&
+             data.order is number && data.order >= 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             ((data.device is string && data.device in ['mobile', 'desktop']) ||
+              (data.deviceType is string && data.deviceType in ['Mobile', 'Desktop']));
     }
 
     function isValidHotspot(data) {

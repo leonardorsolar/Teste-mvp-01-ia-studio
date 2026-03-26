@@ -122,25 +122,76 @@ export default function AppEditor() {
     setIsNewScreenModalOpen(true);
   };
 
-  const handleSaveNewScreen = (screenData: { name: string; device: 'mobile' | 'desktop'; imageUrl: string }) => {
-    // 1. Estrutura de dados — objeto com id, name, device e imageUrl (base64)
-    const newScreen: ScreenData = {
-      id: Date.now().toString(),
-      appId: appId || 'local',
-      name: screenData.name,
+  const handleSaveNewScreen = async (screenData: { name: string; device: 'mobile' | 'desktop'; imageUrl: string }) => {
+    console.log('[Firestore][screens][onAdd-called]', {
+      appId,
       device: screenData.device,
-      imageUrl: screenData.imageUrl,
-      order: screens.length
-    };
-    
-    // 2. setState React — screens array no estado local
-    setScreens(prev => [...prev, newScreen]);
-    
-    // 3. Seleção automática — activeScreenId = newScreen.id
-    setActiveScreenId(newScreen.id);
-    
-    // Fechar modal
-    setIsNewScreenModalOpen(false);
+      imageBase64Length: screenData.imageUrl.length,
+    });
+
+    try {
+      let targetAppId = appId;
+
+      if (!targetAppId || targetAppId === 'new') {
+        if (!auth.currentUser) {
+          throw new Error('Usuário não autenticado. Faça login para criar o app.');
+        }
+
+        const appName = (newAppName || '').trim() || `Novo App ${new Date().toLocaleString('pt-BR')}`;
+        const appRef = await addDoc(collection(db, 'apps'), {
+          name: appName,
+          ownerId: auth.currentUser.uid,
+          createdAt: serverTimestamp(),
+          platform: newAppPlatform,
+          status: 'Draft',
+          version: 'v1.0.0'
+        });
+
+        targetAppId = appRef.id;
+        console.log('[Firestore][apps][auto-created]', {
+          appId: targetAppId,
+          name: appName,
+          platform: newAppPlatform,
+        });
+
+        navigate(`/apps/${targetAppId}/edit`, { replace: true });
+      }
+
+      const payload = {
+        appId: targetAppId,
+        name: screenData.name,
+        device: screenData.device,
+        imageUrl: screenData.imageUrl,
+        order: screens.length,
+        createdAt: serverTimestamp()
+      };
+
+      console.log('[Firestore][screens][send]', {
+        path: `apps/${targetAppId}/screens`,
+        appId: targetAppId,
+        name: payload.name,
+        device: payload.device,
+        order: payload.order,
+        imageBase64Length: payload.imageUrl.length,
+      });
+
+      const screenRef = await addDoc(collection(db, `apps/${targetAppId}/screens`), payload);
+
+      console.log('[Firestore][screens][ok]', {
+        path: `apps/${targetAppId}/screens/${screenRef.id}`,
+        screenId: screenRef.id,
+        appId: targetAppId,
+      });
+
+      setActiveScreenId(screenRef.id);
+      setIsNewScreenModalOpen(false);
+    } catch (error) {
+      console.error('[Firestore][screens][error-raw]', error);
+      if (error instanceof Error) {
+        console.error('[Firestore][screens][error-message]', error.message);
+      }
+      handleFirestoreError(error, OperationType.CREATE, `apps/${appId}/screens`);
+    }
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -345,7 +396,7 @@ export default function AppEditor() {
                 activeScreenId === screen.id ? "border-blue-500 ring-2 ring-blue-500/20" : "border-transparent hover:border-slate-700"
               }`}
             >
-              <div className={`aspect-[9/16] bg-slate-800 relative`}>
+              <div className={`aspect-9/16 bg-slate-800 relative`}>
                 <img src={screen.imageUrl} alt={screen.name} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
                 {screen.device && (
                   <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-black/60 backdrop-blur-md rounded text-[8px] font-bold text-white uppercase tracking-wider flex items-center gap-1">
@@ -364,7 +415,7 @@ export default function AppEditor() {
           ))}
           <button 
             onClick={handleAddScreen}
-            className="w-full aspect-[9/16] border-2 border-dashed border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/30 rounded-xl flex flex-col items-center justify-center gap-2 transition-all group"
+            className="w-full aspect-9/16 border-2 border-dashed border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/30 rounded-xl flex flex-col items-center justify-center gap-2 transition-all group"
           >
             <Plus className="w-6 h-6 text-slate-500 group-hover:text-blue-400" />
             <span className="text-[10px] font-semibold text-slate-500">Nova Tela</span>
@@ -447,7 +498,7 @@ export default function AppEditor() {
                 <div 
                   key={hotspot.id}
                   onClick={(e) => { e.stopPropagation(); handleEditHotspot(hotspot); }}
-                  className={`absolute border rounded-[4px] hotspot-item group/hotspot transition-all cursor-pointer ${
+                  className={`absolute border rounded-sm hotspot-item group/hotspot transition-all cursor-pointer ${
                     selectedHotspotId === hotspot.id 
                       ? 'border-[#4f6ef7] border-[3px] bg-[#4f6ef74d] z-20' 
                       : 'border-[#4f6ef7] border-2 bg-[#4f6ef759] opacity-[0.35] hover:opacity-[0.65] z-10'
@@ -476,7 +527,7 @@ export default function AppEditor() {
               {/* Drawing Hotspot */}
               {currentHotspot && (
                 <div 
-                  className="absolute border-2 border-[#4f6ef7] bg-[#4f6ef740] rounded-[4px] z-30 pointer-events-none"
+                  className="absolute border-2 border-[#4f6ef7] bg-[#4f6ef740] rounded-sm z-30 pointer-events-none"
                   style={{
                     left: `${currentHotspot.x}%`,
                     top: `${currentHotspot.y}%`,
@@ -489,7 +540,7 @@ export default function AppEditor() {
               {/* Pending Hotspot (being configured) */}
               {showHotspotPopover && pendingHotspot && (
                 <div 
-                  className="absolute border-[3px] border-[#4f6ef7] bg-[#4f6ef74d] rounded-[4px] z-30 pointer-events-none"
+                  className="absolute border-[3px] border-[#4f6ef7] bg-[#4f6ef74d] rounded-sm z-30 pointer-events-none"
                   style={{
                     left: `${pendingHotspot.x}%`,
                     top: `${pendingHotspot.y}%`,
