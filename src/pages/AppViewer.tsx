@@ -39,6 +39,62 @@ const VIEWER_FEEDBACK_TUTORIAL_STEPS = [
   'Repita a operação quantas vezes necessário',
 ] as const;
 
+/** Skeleton neutro (frame tipo browser) até o Firestore devolver app + telas — evita flash do mock mobile. */
+function ViewerMainSkeleton({ showGuestFooter }: { showGuestFooter: boolean }) {
+  return (
+    <>
+      <section className="flex-1 min-h-0 bg-slate-950 relative overflow-hidden flex flex-col p-3">
+        <div className="relative flex-1 min-h-0 bg-slate-800 rounded-xl border border-slate-700 overflow-hidden flex flex-col shadow-2xl">
+          <div className="h-10 shrink-0 flex items-center gap-2 px-4 bg-slate-700">
+            <div className="flex gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-slate-600/90" />
+              <div className="w-3 h-3 rounded-full bg-slate-600/90" />
+              <div className="w-3 h-3 rounded-full bg-slate-600/90" />
+            </div>
+            <div className="flex-1 mx-4 h-6 rounded-md bg-slate-600/70 animate-pulse" />
+            <div className="w-7 h-5 rounded bg-slate-600/50 animate-pulse shrink-0" />
+          </div>
+          <div className="flex-1 min-h-0 p-5 flex items-stretch">
+            <div className="flex-1 rounded-lg bg-linear-to-b from-slate-700/40 to-slate-800/60 animate-pulse min-h-[180px]" />
+          </div>
+        </div>
+      </section>
+      <aside className="w-80 shrink-0 min-h-0 flex flex-col overflow-hidden bg-white border-l border-slate-200">
+        <div className="p-6 border-b border-slate-200 space-y-3">
+          <div className="flex justify-between items-center gap-3">
+            <div className="h-6 w-36 rounded-md bg-slate-200 animate-pulse" />
+            <div className="h-6 w-9 rounded-full bg-slate-200 animate-pulse shrink-0" />
+          </div>
+          <div className="h-3 w-full max-w-[220px] rounded bg-slate-100 animate-pulse" />
+          <div className="h-3 w-[85%] rounded bg-slate-100 animate-pulse" />
+        </div>
+        <div className="flex-1 min-h-0 p-4 space-y-3 overflow-hidden">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="rounded-xl border border-slate-100 p-4 space-y-3 bg-white shadow-sm"
+            >
+              <div className="h-3 w-28 rounded bg-slate-200 animate-pulse" />
+              <div className="h-3 w-full rounded bg-slate-100 animate-pulse" />
+              <div className="h-3 w-[92%] rounded bg-slate-100 animate-pulse" />
+            </div>
+          ))}
+        </div>
+        <div className="shrink-0 border-t border-slate-200 p-4 space-y-2 bg-white">
+          {showGuestFooter ? (
+            <div className="h-10 w-full rounded-lg bg-slate-200 animate-pulse" />
+          ) : (
+            <>
+              <div className="h-10 w-full rounded-lg bg-slate-200 animate-pulse" />
+              <div className="h-10 w-full rounded-lg bg-slate-100 animate-pulse" />
+            </>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
 export default function AppViewer() {
   const { appId } = useParams();
   const navigate = useNavigate();
@@ -72,6 +128,7 @@ export default function AppViewer() {
   const [guestSuggestions, setGuestSuggestions] = useState<GuestSuggestionData[]>([]);
   const [rateLimitWarning, setRateLimitWarning] = useState(false);
   const [sessionIssueIds, setSessionIssueIds] = useState<string[]>([]);
+  const [fsSnapshotReady, setFsSnapshotReady] = useState({ app: false, screens: false });
 
   const draggingIssueIdRef = useRef<string | null>(null);
   const issueDragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -127,50 +184,63 @@ export default function AppViewer() {
   }, [appId, isFeedbackMode, feedbackPos, issues.length, guestSuggestions.length, isPublicFeedback]);
 
   useEffect(() => {
-    if (appId) {
-      const unsubscribeApp = onSnapshot(doc(db, 'apps', appId), (doc) => {
-        if (doc.exists()) {
-          setApp({ id: doc.id, ...doc.data() } as AppData);
-        }
-      });
-
-      const qScreens = query(collection(db, `apps/${appId}/screens`));
-      const unsubscribeScreens = onSnapshot(qScreens, (snapshot) => {
-        const screensData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as ScreenData[];
-        const sorted = screensData.sort((a, b) => a.order - b.order);
-        setScreens(sorted);
-        if (sorted.length > 0 && !currentScreenId) {
-          setCurrentScreenId(sorted[0].id);
-        }
-      });
-
-      let unsubscribeIssues = () => {};
-      let unsubscribeGuestSuggestions = () => {};
-
-      if (!isPublicFeedback) {
-        // Modo admin: carrega issues autenticadas
-        const qIssues = query(collection(db, `apps/${appId}/issues`));
-        unsubscribeIssues = onSnapshot(qIssues, (snapshot) => {
-          const issuesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as IssueData[];
-          setIssues(issuesData);
-        });
-
-        // Modo admin: carrega também as sugestões de convidados
-        const qGuest = query(collection(db, `apps/${appId}/guestSuggestions`));
-        unsubscribeGuestSuggestions = onSnapshot(qGuest, (snapshot) => {
-          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GuestSuggestionData[];
-          setGuestSuggestions(data);
-        });
-      }
-      // Modo guest: sem subscriptions (issues exigem auth; guestSuggestions ficam em estado local)
-
-      return () => {
-        unsubscribeApp();
-        unsubscribeScreens();
-        unsubscribeIssues();
-        unsubscribeGuestSuggestions();
-      };
+    if (!appId) {
+      setFsSnapshotReady({ app: false, screens: false });
+      return;
     }
+
+    setFsSnapshotReady({ app: false, screens: false });
+    setApp(null);
+    setScreens([]);
+    setCurrentScreenId(null);
+    setHotspots([]);
+    setIssues([]);
+    setGuestSuggestions([]);
+
+    const unsubscribeApp = onSnapshot(doc(db, 'apps', appId), (docSnap) => {
+      if (docSnap.exists()) {
+        setApp({ id: docSnap.id, ...docSnap.data() } as AppData);
+      } else {
+        setApp(null);
+      }
+      setFsSnapshotReady((p) => (p.app ? p : { ...p, app: true }));
+    });
+
+    const qScreens = query(collection(db, `apps/${appId}/screens`));
+    const unsubscribeScreens = onSnapshot(qScreens, (snapshot) => {
+      const screensData = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as ScreenData[];
+      const sorted = screensData.sort((a, b) => a.order - b.order);
+      setScreens(sorted);
+      setCurrentScreenId((id) => (sorted.length > 0 && !id ? sorted[0].id : id));
+      setFsSnapshotReady((p) => (p.screens ? p : { ...p, screens: true }));
+    });
+
+    let unsubscribeIssues = () => {};
+    let unsubscribeGuestSuggestions = () => {};
+
+    if (!isPublicFeedback) {
+      // Modo admin: carrega issues autenticadas
+      const qIssues = query(collection(db, `apps/${appId}/issues`));
+      unsubscribeIssues = onSnapshot(qIssues, (snapshot) => {
+        const issuesData = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as IssueData[];
+        setIssues(issuesData);
+      });
+
+      // Modo admin: carrega também as sugestões de convidados
+      const qGuest = query(collection(db, `apps/${appId}/guestSuggestions`));
+      unsubscribeGuestSuggestions = onSnapshot(qGuest, (snapshot) => {
+        const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as GuestSuggestionData[];
+        setGuestSuggestions(data);
+      });
+    }
+    // Modo guest: sem subscriptions (issues exigem auth; guestSuggestions ficam em estado local)
+
+    return () => {
+      unsubscribeApp();
+      unsubscribeScreens();
+      unsubscribeIssues();
+      unsubscribeGuestSuggestions();
+    };
   }, [appId, isPublicFeedback]);
 
   useEffect(() => {
@@ -458,6 +528,7 @@ export default function AppViewer() {
   }, []);
 
   const currentScreen = screens.find(s => s.id === currentScreenId);
+  const viewerLoading = Boolean(appId) && (!fsSnapshotReady.app || !fsSnapshotReady.screens);
   const screenIssues = issues.filter(i => i.screenId === currentScreenId);
   const screenGuestSuggestions = guestSuggestions.filter(
     (s) =>
@@ -591,7 +662,7 @@ export default function AppViewer() {
     });
 
   return (
-    <div ref={viewerRef} className="min-h-screen bg-slate-50 flex flex-col overflow-hidden">
+    <div ref={viewerRef} className="h-dvh max-h-dvh min-h-0 bg-slate-50 flex flex-col overflow-hidden">
       {/* Top Bar */}
       <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-50 shrink-0">
         <div className="flex items-center gap-4">
@@ -604,7 +675,18 @@ export default function AppViewer() {
             <img src={jumpadLogoDark} alt="Jumpad" className="h-7 w-auto object-contain" />
           </button>
           <div className="h-6 w-px bg-slate-200"></div>
-          <span className="text-sm font-medium text-slate-500">{app?.name} — {app?.version}</span>
+          <span className="text-sm font-medium text-slate-500 min-w-0 flex items-center">
+            {viewerLoading ? (
+              <span
+                className="inline-block h-4 w-44 max-w-[50vw] rounded-md bg-slate-200 animate-pulse"
+                aria-hidden
+              />
+            ) : (
+              <>
+                {app?.name ?? 'Protótipo'} — {app?.version ?? '—'}
+              </>
+            )}
+          </span>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center bg-slate-100 px-4 py-2 rounded-full gap-2 text-slate-500">
@@ -655,13 +737,24 @@ export default function AppViewer() {
         </div>
       </header>
 
-      <main className="flex-1 flex relative overflow-hidden">
+      <main
+        className="flex-1 min-h-0 flex relative overflow-hidden"
+        aria-busy={viewerLoading}
+      >
+        {viewerLoading ? (
+          <ViewerMainSkeleton showGuestFooter={isPublicFeedback} />
+        ) : (
+          <>
         {/* Prototype Viewer */}
-        <section className={`flex-1 bg-slate-950 relative overflow-hidden flex ${
-          currentScreen?.device === 'desktop'
-            ? 'flex-col p-3'
-            : 'flex-col items-center justify-center p-8'
-        }`}>
+        <section
+          className={`flex-1 min-h-0 bg-slate-950 relative overflow-hidden flex ${
+            currentScreen?.device === 'desktop'
+              ? 'flex-col p-3'
+              : currentScreen
+                ? 'flex-col items-center justify-center p-8'
+                : 'flex-col items-center justify-center p-8'
+          }`}
+        >
           {currentScreen?.device === 'desktop' ? (
             /* ── Desktop / Browser Frame ── */
             <div className="relative flex-1 bg-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col border border-slate-700 min-h-0">
@@ -687,7 +780,7 @@ export default function AppViewer() {
               {/* Screen Content */}
               <div
                 data-prototype-viewport
-                className="relative cursor-pointer flex-1 min-h-0"
+                className="relative cursor-pointer flex-1 min-h-0 overflow-hidden"
                 onDoubleClick={handleDoubleClick}
               >
                 {currentScreen ? (
@@ -779,7 +872,7 @@ export default function AppViewer() {
                 </AnimatePresence>
               </div>
             </div>
-          ) : (
+          ) : currentScreen ? (
             /* ── Mobile Phone Frame ── */
             <div className="relative w-85 h-170 bg-slate-900 rounded-[3rem] p-3 border-8 border-slate-800 shadow-2xl flex flex-col overflow-hidden">
               <div className="relative flex-1 bg-white rounded-[2.2rem] overflow-hidden flex flex-col">
@@ -794,7 +887,7 @@ export default function AppViewer() {
                 {/* Screen Content */}
                 <div
                   data-prototype-viewport
-                  className="flex-1 relative cursor-pointer"
+                  className="flex-1 min-h-0 relative cursor-pointer overflow-hidden"
                   onDoubleClick={handleDoubleClick}
                 >
                   {currentScreen ? (
@@ -892,11 +985,16 @@ export default function AppViewer() {
                 </div>
               </div>
             </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center max-w-sm">
+              <MessageSquare className="w-14 h-14 text-slate-600 opacity-35 shrink-0" aria-hidden />
+              <p className="text-sm text-slate-400">Nenhuma tela neste protótipo.</p>
+            </div>
           )}
         </section>
 
-        {/* Right Drawer */}
-        <aside className="w-80 min-h-0 h-full bg-white flex flex-col border-l border-slate-200">
+        {/* Right Drawer — altura limitada à viewport; só a lista rola para não deslocar o protótipo/marcadores */}
+        <aside className="w-80 shrink-0 min-h-0 flex flex-col overflow-hidden bg-white border-l border-slate-200">
           <div className="p-6 border-b border-slate-200">
             <div className="flex items-center justify-between mb-1">
               <h2 className="font-bold text-lg text-slate-900">
@@ -916,7 +1014,7 @@ export default function AppViewer() {
             </p>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 custom-scroll">
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain p-4 flex flex-col gap-3 custom-scroll">
             {/* Issues autenticadas (apenas admin) */}
             {!isPublicFeedback && screenIssues.map((issue) => {
               const isEditing = editingIssueId === issue.id;
@@ -1175,6 +1273,8 @@ export default function AppViewer() {
             </div>
           )}
         </aside>
+          </>
+        )}
       </main>
 
       {/* Modal de nome do convidado (bloqueante) */}
