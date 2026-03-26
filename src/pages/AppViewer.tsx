@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData, IssueData } from '../types';
@@ -10,7 +10,9 @@ import {
   X, 
   AlertCircle,
   Clock,
-  MessageSquare
+  MessageSquare,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -28,6 +30,8 @@ export default function AppViewer() {
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackPriority, setFeedbackPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [showHint, setShowHint] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const viewerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (appId) {
@@ -110,13 +114,27 @@ export default function AppViewer() {
     }
   };
 
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      viewerRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
   const currentScreen = screens.find(s => s.id === currentScreenId);
   const screenIssues = issues.filter(i => i.screenId === currentScreenId);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col overflow-hidden">
+    <div ref={viewerRef} className="min-h-screen bg-slate-50 flex flex-col overflow-hidden">
       {/* Top Bar */}
-      <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-50">
+      <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 sticky top-0 z-50 shrink-0">
         <div className="flex items-center gap-4">
           <button onClick={() => navigate('/')} className="text-blue-700 font-bold text-xl">AppMapper</button>
           <div className="h-6 w-px bg-slate-200"></div>
@@ -127,6 +145,14 @@ export default function AppViewer() {
             <Eye className="w-4 h-4" />
             <span className="text-xs font-medium">Modo de Teste Ativo</span>
           </div>
+          <button
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Sair do Fullscreen' : 'Tela Cheia'}
+            className="flex items-center gap-2 bg-slate-100 text-slate-600 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 transition-all"
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            <span className="text-xs">{isFullscreen ? 'Sair' : 'Fullscreen'}</span>
+          </button>
           <button 
             onClick={() => navigate('/')}
             className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all"
@@ -139,10 +165,14 @@ export default function AppViewer() {
 
       <main className="flex-1 flex relative overflow-hidden">
         {/* Prototype Viewer */}
-        <section className="flex-1 bg-slate-100 flex flex-col items-center justify-center p-8 relative overflow-auto custom-scroll">
+        <section className={`flex-1 bg-slate-950 relative overflow-hidden flex ${
+          currentScreen?.device === 'desktop'
+            ? 'flex-col p-3'
+            : 'flex-col items-center justify-center p-8'
+        }`}>
           {currentScreen?.device === 'desktop' ? (
             /* ── Desktop / Browser Frame ── */
-            <div className="relative w-full max-w-4xl bg-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col border border-slate-700">
+            <div className="relative flex-1 bg-slate-800 rounded-xl shadow-2xl overflow-hidden flex flex-col border border-slate-700 min-h-0">
               {/* Browser chrome */}
               <div className="h-10 bg-slate-700 flex items-center px-4 gap-2 shrink-0">
                 <div className="flex gap-1.5">
@@ -153,12 +183,18 @@ export default function AppViewer() {
                 <div className="flex-1 mx-4 bg-slate-600 rounded-md h-6 flex items-center px-3">
                   <span className="text-[11px] text-slate-300 truncate">{app?.name || 'Protótipo'}</span>
                 </div>
+                <button
+                  onClick={toggleFullscreen}
+                  title={isFullscreen ? 'Sair do Fullscreen' : 'Tela Cheia'}
+                  className="text-slate-400 hover:text-white transition-colors p-1 rounded"
+                >
+                  {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                </button>
               </div>
 
               {/* Screen Content */}
               <div
-                className="relative cursor-pointer"
-                style={{ aspectRatio: '16/9' }}
+                className="relative cursor-pointer flex-1 min-h-0"
                 onDoubleClick={handleDoubleClick}
               >
                 {currentScreen ? (
