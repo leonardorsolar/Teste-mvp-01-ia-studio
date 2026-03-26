@@ -77,7 +77,7 @@ export default function Layout({ children }: LayoutProps) {
           <p className="text-slate-500 mb-8">Faça login para gerenciar seus fluxos de aplicativos.</p>
           <button 
             onClick={handleLogin}
-            className="w-full flex items-center justify-center gap-3 bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 transition-all active:scale-95"
+            className="w-full flex items-center justify-center gap-3 bg-gray-900 text-white py-3 rounded-xl font-semibold hover:bg-gray-100 hover:text-black transition-all active:scale-95"
           >
             <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
             Entrar com Google

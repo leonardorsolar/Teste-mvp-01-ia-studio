@@ -1,3 +1,6 @@
+Auth:
+https://console.firebase.google.com/project/gen-lang-client-0206982864/authentication/users
+
 Firestore Database (Onde os dados das telas e hotspots são salvos):
 
 https://console.firebase.google.com/project/gen-lang-client-0206982864/firestore/databases/ai-studio-bf42b197-f37f-447f-8878-944b3eaccdfc/data
