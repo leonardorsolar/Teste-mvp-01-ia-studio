@@ -169,9 +169,16 @@ export default function Dashboard() {
             <div className="p-5 flex flex-col flex-1 min-h-0">
               <div className="flex justify-between items-start gap-2 mb-1">
                 <h3 className="font-bold text-lg text-slate-900 min-w-0 flex-1">{app.name}</h3>
-                <Link to={`/apps/${app.id}/view`} className="text-slate-400 hover:text-blue-600 transition-colors shrink-0">
-                  <ExternalLink className="w-5 h-5" />
-                </Link>
+                {app.status === 'Published' && (
+                  <Link
+                    to={`/apps/${app.id}/feedback`}
+                    className="text-slate-400 hover:text-blue-600 transition-colors shrink-0"
+                    title="Abrir área de feedback (visualização pública)"
+                    aria-label={`Abrir visualização pública de ${app.name}`}
+                  >
+                    <ExternalLink className="w-5 h-5" />
+                  </Link>
+                )}
               </div>
               <div className="flex items-center gap-2 mb-4">
                 {getPlatformIcon(app.platform)}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db, auth, doc, getDoc, setDoc, collection, addDoc, onSnapshot, query, where, updateDoc, deleteDoc, getDocs, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
@@ -16,11 +16,25 @@ import {
   Settings as SettingsIcon,
   ChevronRight,
   Eye,
-  Monitor
+  Monitor,
+  Check
 } from 'lucide-react';
 import { motion, Reorder, AnimatePresence } from 'motion/react';
 import NewScreenModal from '../components/NewScreenModal';
 import NewAppModal, { NewAppFormData } from '../components/NewAppModal';
+import {
+  loadEditorTutorialChecks,
+  saveEditorTutorialChecks,
+  markEditorTutorialPreviewDone,
+} from '../utils/editorTutorialProgress';
+
+const EDITOR_TUTORIAL_STEPS = [
+  'Clique em Nova tela e adicione a primeira tela do app',
+  'Clique em Nova tela e adicione a segunda tela do app',
+  'Na parte superior da tela, clique no botão quadrado e desenhe na imagem a área do botão',
+  'Selecione a tela para a qual deseja que o botão redirecione',
+  'Ao finalizar, clique em Visualização',
+] as const;
 
 export default function AppEditor() {
   const { appId } = useParams();
@@ -33,7 +47,21 @@ export default function AppEditor() {
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
   const [isNewScreenModalOpen, setIsNewScreenModalOpen] = useState(false);
-  
+  const [tutorialChecklist, setTutorialChecklist] = useState<boolean[]>(() =>
+    Array(EDITOR_TUTORIAL_STEPS.length).fill(false)
+  );
+
+  const goToPreview = useCallback(() => {
+    if (!appId || appId === 'new') return;
+    markEditorTutorialPreviewDone(appId);
+    setTutorialChecklist((prev) => {
+      const next = [...prev];
+      next[4] = true;
+      return next;
+    });
+    navigate(`/apps/${appId}/view`);
+  }, [appId, navigate]);
+
   const canvasRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
@@ -66,6 +94,41 @@ export default function AppEditor() {
       };
     }
   }, [appId]);
+
+  useEffect(() => {
+    if (!appId || appId === 'new') {
+      setTutorialChecklist(Array(EDITOR_TUTORIAL_STEPS.length).fill(false));
+      return;
+    }
+    setTutorialChecklist(loadEditorTutorialChecks(appId));
+  }, [appId]);
+
+  useEffect(() => {
+    if (!appId || appId === 'new') return;
+    const stored = loadEditorTutorialChecks(appId);
+    const next = [...stored];
+    next[0] = screens.length >= 1;
+    next[1] = screens.length >= 2;
+    const drewArea =
+      hotspots.length >= 1 ||
+      Boolean(
+        showHotspotPopover &&
+          pendingHotspot &&
+          (pendingHotspot.width ?? 0) > 0 &&
+          (pendingHotspot.height ?? 0) > 0
+      );
+    next[2] = stored[2] || drewArea;
+    const pickedTarget =
+      hotspots.some((h) => h.targetScreenId && String(h.targetScreenId).trim() !== '') ||
+      Boolean(pendingHotspot?.targetScreenId && String(pendingHotspot.targetScreenId).trim() !== '');
+    next[3] = stored[3] || pickedTarget;
+    next[4] = stored[4];
+    const changed = next.some((v, i) => v !== stored[i]);
+    if (changed) {
+      saveEditorTutorialChecks(appId, next);
+    }
+    setTutorialChecklist((prev) => (next.every((v, i) => v === prev[i]) ? prev : next));
+  }, [appId, screens.length, hotspots, showHotspotPopover, pendingHotspot]);
 
   useEffect(() => {
     if (appId && activeScreenId) {
@@ -475,7 +538,7 @@ export default function AppEditor() {
           </button>
           <button 
             type="button"
-            onClick={() => appId && appId !== 'new' && navigate(`/apps/${appId}/view`)}
+            onClick={() => goToPreview()}
             disabled={!appId || appId === 'new'}
             className="w-10 h-10 flex items-center justify-center rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >
@@ -659,7 +722,7 @@ export default function AppEditor() {
           <div className="flex items-center gap-4">
             <button
               type="button"
-              onClick={() => appId && appId !== 'new' && navigate(`/apps/${appId}/view`)}
+              onClick={() => goToPreview()}
               disabled={!appId || appId === 'new' || isCreatingApp}
               className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all disabled:opacity-40 disabled:pointer-events-none"
             >
@@ -670,7 +733,7 @@ export default function AppEditor() {
       </section>
 
       {/* Right Sidebar: Properties */}
-      <aside className="w-72 bg-slate-900 border-l border-slate-800 p-5 flex flex-col gap-6">
+      <aside className="w-72 min-h-0 bg-slate-900 border-l border-slate-800 p-5 flex flex-col gap-6">
         <section>
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Propriedades da Tela</h3>
@@ -722,7 +785,7 @@ export default function AppEditor() {
 
         <div className="h-px bg-slate-800"></div>
 
-        <section className="flex-1 overflow-y-auto no-scrollbar">
+        <section className="flex-1 min-h-0 overflow-y-auto no-scrollbar">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Interações ({hotspots.length})</h3>
             <button 
@@ -767,7 +830,46 @@ export default function AppEditor() {
             ))}
           </div>
         )}
-      </section>
+        </section>
+
+        <section className="shrink-0 border-t border-slate-800 pt-4 -mx-5 px-5 pb-0">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Tutorial</h3>
+          <p className="text-[10px] text-slate-600 mb-2 leading-relaxed">
+            Os itens são marcados automaticamente ao concluir cada passo e o progresso fica salvo neste navegador.
+          </p>
+          <ul className="space-y-1.5">
+            {EDITOR_TUTORIAL_STEPS.map((text, i) => {
+              const done = tutorialChecklist[i];
+              return (
+                <li key={i}>
+                  <div
+                    className="w-full text-left flex gap-2.5 items-start rounded-lg p-2 -mx-2"
+                    role="status"
+                    aria-label={done ? `Check ${i + 1} concluído` : `Check ${i + 1} pendente`}
+                  >
+                    <span
+                      className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                        done ? 'bg-blue-600 border-blue-600' : 'border-slate-600 bg-slate-800/50'
+                      }`}
+                      aria-hidden
+                    >
+                      {done && <Check className="w-2.5 h-2.5 text-white stroke-3" />}
+                    </span>
+                    <span
+                      className={`text-[11px] leading-snug ${
+                        done ? 'text-slate-500 line-through' : 'text-slate-400'
+                      }`}
+                    >
+                      <span className="font-semibold text-slate-500 tabular-nums">Check {i + 1}</span>
+                      {' — '}
+                      {text}
+                    </span>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       </aside>
     </div>
   );

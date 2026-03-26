@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db, auth, doc, getDoc, collection, onSnapshot, query, where, addDoc, updateDoc, deleteDoc, serverTimestamp, OperationType, handleFirestoreError } from '../firebase';
 import { AppData, ScreenData, HotspotData, IssueData } from '../types';
 import { 
@@ -15,15 +15,30 @@ import {
   Maximize2,
   Minimize2,
   Pencil,
-  Trash2
+  Trash2,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jumpadLogoDark from '../assets/images/jumpad-logo-dark.svg';
 import PublishSuccessModal from '../components/PublishSuccessModal';
+import FeedbackThankYouModal from '../components/FeedbackThankYouModal';
+import { markEditorTutorialPreviewDone } from '../utils/editorTutorialProgress';
+import {
+  loadViewerFeedbackTutorialChecks,
+  saveViewerFeedbackTutorialChecks,
+} from '../utils/viewerFeedbackTutorialProgress';
+
+const VIEWER_FEEDBACK_TUTORIAL_STEPS = [
+  'Dê um duplo clique em qualquer área do protótipo',
+  'Registre a observação',
+  'Repita a operação quantas vezes necessário',
+] as const;
 
 export default function AppViewer() {
   const { appId } = useParams();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const isPublicFeedback = pathname.endsWith('/feedback');
   const [app, setApp] = useState<AppData | null>(null);
   const [screens, setScreens] = useState<ScreenData[]>([]);
   const [currentScreenId, setCurrentScreenId] = useState<string | null>(null);
@@ -37,12 +52,16 @@ export default function AppViewer() {
   const [showHint, setShowHint] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [publishSuccessOpen, setPublishSuccessOpen] = useState(false);
+  const [feedbackCompleteOpen, setFeedbackCompleteOpen] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [editingIssueId, setEditingIssueId] = useState<string | null>(null);
   const [editIssueText, setEditIssueText] = useState('');
   const [editIssuePriority, setEditIssuePriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [issueActionLoadingId, setIssueActionLoadingId] = useState<string | null>(null);
   const [issueDragLive, setIssueDragLive] = useState<{ issueId: string; x: number; y: number } | null>(null);
+  const [feedbackTutorialChecks, setFeedbackTutorialChecks] = useState<boolean[]>(() =>
+    Array(VIEWER_FEEDBACK_TUTORIAL_STEPS.length).fill(false)
+  );
   const draggingIssueIdRef = useRef<string | null>(null);
   const issueDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const issueDragLiveRef = useRef<{ issueId: string; x: number; y: number } | null>(null);
@@ -56,6 +75,34 @@ export default function AppViewer() {
     },
     [app?.ownerId]
   );
+
+  useEffect(() => {
+    if (appId && !isPublicFeedback) {
+      markEditorTutorialPreviewDone(appId);
+    }
+  }, [appId, isPublicFeedback]);
+
+  useEffect(() => {
+    if (!appId) {
+      setFeedbackTutorialChecks(Array(VIEWER_FEEDBACK_TUTORIAL_STEPS.length).fill(false));
+      return;
+    }
+    setFeedbackTutorialChecks(loadViewerFeedbackTutorialChecks(appId));
+  }, [appId]);
+
+  useEffect(() => {
+    if (!appId) return;
+    const stored = loadViewerFeedbackTutorialChecks(appId);
+    const next = [...stored];
+    next[0] = stored[0] || Boolean(isFeedbackMode && feedbackPos);
+    next[1] = stored[1] || issues.length >= 1;
+    next[2] = stored[2] || issues.length >= 2;
+    const changed = next.some((v, i) => v !== stored[i]);
+    if (changed) {
+      saveViewerFeedbackTutorialChecks(appId, next);
+    }
+    setFeedbackTutorialChecks((prev) => (next.every((v, i) => v === prev[i]) ? prev : next));
+  }, [appId, isFeedbackMode, feedbackPos, issues.length]);
 
   useEffect(() => {
     if (appId) {
@@ -88,6 +135,13 @@ export default function AppViewer() {
       };
     }
   }, [appId]);
+
+  useEffect(() => {
+    if (!isPublicFeedback || !appId || !app) return;
+    if (app.status !== 'Published') {
+      navigate(`/apps/${appId}/edit`, { replace: true });
+    }
+  }, [isPublicFeedback, appId, app, navigate]);
 
   useEffect(() => {
     if (appId && currentScreenId) {
@@ -290,24 +344,64 @@ export default function AppViewer() {
       const lx = live ? live.x : issue.x;
       const ly = live ? live.y : issue.y;
       const draggable = canManageIssue(issue);
+      const priorityLabel =
+        issue.priority === 'High'
+          ? 'Alta Prioridade'
+          : issue.priority === 'Medium'
+            ? 'Prioridade Média'
+            : 'Sugestão';
+      const badgeClass =
+        issue.priority === 'High'
+          ? 'bg-red-50 text-red-600'
+          : issue.priority === 'Medium'
+            ? 'bg-blue-50 text-blue-600'
+            : 'bg-slate-50 text-slate-500';
       return (
         <div
           key={issue.id}
-          className={`absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white z-10 touch-none select-none ${
+          className={`group/issue-marker absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[10px] font-bold text-white z-10 touch-none select-none ${
             issue.priority === 'High' ? 'bg-red-500' : issue.priority === 'Medium' ? 'bg-blue-500' : 'bg-slate-500'
-          } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} hover:z-[60]`}
           style={{ left: `${lx}%`, top: `${ly}%` }}
-          title={
-            draggable
-              ? `${issue.text} — Segure e arraste para mover`
-              : issue.text
-          }
+          aria-label={`${priorityLabel}: ${issue.text}. Relatado por ${issue.authorName}.${draggable ? ' Segure e arraste para mover o marcador.' : ''}`}
           onPointerDown={draggable ? (e) => handleIssueMarkerPointerDown(e, issue) : undefined}
           onPointerMove={draggable ? (e) => handleIssueMarkerPointerMove(e, issue) : undefined}
           onPointerUp={draggable ? (e) => finishIssueMarkerDrag(e, issue) : undefined}
           onPointerCancel={draggable ? (e) => finishIssueMarkerDrag(e, issue) : undefined}
         >
           !
+          <div
+            className="absolute left-1/2 bottom-[calc(100%+10px)] z-[100] w-max min-w-[200px] max-w-[min(280px,calc(100vw-3rem))] -translate-x-1/2 pointer-events-none opacity-0 translate-y-1 scale-[0.97] transition-all duration-200 ease-out group-hover/issue-marker:opacity-100 group-hover/issue-marker:translate-y-0 group-hover/issue-marker:scale-100"
+            role="tooltip"
+          >
+            <div className="relative rounded-xl border border-slate-200/90 bg-white/95 px-3.5 py-3 text-left shadow-[0_14px_44px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md">
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter ${badgeClass}`}>
+                  {priorityLabel}
+                </span>
+                <span className="flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-slate-400">
+                  <Clock className="h-2.5 w-2.5" aria-hidden />
+                  {issue.createdAt?.toDate().toLocaleDateString()}
+                </span>
+              </div>
+              <p className="custom-scroll mb-2.5 max-h-28 overflow-y-auto pr-0.5 text-xs font-medium leading-snug text-slate-800">
+                {issue.text}
+              </p>
+              <div className="flex items-center gap-2 border-t border-slate-100 pt-2.5">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
+                  {issue.authorName.charAt(0)}
+                </div>
+                <span className="text-[10px] leading-tight text-slate-500">Relatado por {issue.authorName}</span>
+              </div>
+              {draggable && (
+                <p className="mt-2 border-t border-slate-50 pt-2 text-[9px] italic text-slate-400">Segure e arraste para mover</p>
+              )}
+              <div
+                className="absolute left-1/2 top-full -mt-px h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r border-slate-200/90 bg-white/95 shadow-[2px_2px_4px_-2px_rgba(15,23,42,0.08)] backdrop-blur-md"
+                aria-hidden
+              />
+            </div>
+          </div>
         </div>
       );
     });
@@ -331,7 +425,9 @@ export default function AppViewer() {
         <div className="flex items-center gap-3">
           <div className="flex items-center bg-slate-100 px-4 py-2 rounded-full gap-2 text-slate-500">
             <Eye className="w-4 h-4" />
-            <span className="text-xs font-medium">Modo de Teste Ativo</span>
+            <span className="text-xs font-medium">
+              {isPublicFeedback ? 'Envie suas observações' : 'Modo de Teste Ativo'}
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -363,13 +459,15 @@ export default function AppViewer() {
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             <span className="text-xs">{isFullscreen ? 'Sair' : 'Fullscreen'}</span>
           </button>
-          <button 
-            onClick={() => appId && navigate(`/apps/${appId}/edit`)}
-            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Retornar para edição
-          </button>
+          {!isPublicFeedback && (
+            <button 
+              onClick={() => appId && navigate(`/apps/${appId}/edit`)}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Retornar para edição
+            </button>
+          )}
         </div>
       </header>
 
@@ -606,10 +704,10 @@ export default function AppViewer() {
         </section>
 
         {/* Right Drawer: Issues */}
-        <aside className="w-80 h-full bg-white flex flex-col border-l border-slate-200">
+        <aside className="w-80 min-h-0 h-full bg-white flex flex-col border-l border-slate-200">
           <div className="p-6 border-b border-slate-200">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="font-bold text-lg text-slate-900">Issues desta tela</h2>
+              <h2 className="font-bold text-lg text-slate-900">Observações (Issues)</h2>
               <span className="bg-blue-50 text-blue-600 text-[10px] font-bold px-2 py-0.5 rounded-full">
                 {screenIssues.length.toString().padStart(2, '0')}
               </span>
@@ -617,7 +715,7 @@ export default function AppViewer() {
             <p className="text-xs text-slate-500">Feedback registrado pelos stakeholders</p>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 custom-scroll">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3 custom-scroll">
             {screenIssues.length > 0 ? screenIssues.map((issue) => {
               const isEditing = editingIssueId === issue.id;
               const loading = issueActionLoadingId === issue.id;
@@ -722,23 +820,68 @@ export default function AppViewer() {
             )}
           </div>
 
-          <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
-            <button
-              type="button"
-              onClick={() => void handlePublish()}
-              disabled={isPublishing}
-              className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all disabled:opacity-60 disabled:pointer-events-none"
-            >
-              {isPublishing ? (
-                <>
-                  <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
-                  Publicando…
-                </>
-              ) : (
-                'Publicar'
-              )}
-            </button>
+          <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 py-3">
+            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+              Tutorial
+            </h3>
+            <p className="text-[10px] text-slate-500 mb-2.5 leading-relaxed">
+              Progresso salvo neste navegador; os itens marcam conforme você usa o feedback.
+            </p>
+            <ul className="space-y-2">
+              {VIEWER_FEEDBACK_TUTORIAL_STEPS.map((text, i) => {
+                const done = feedbackTutorialChecks[i];
+                return (
+                  <li key={i} className="flex gap-2.5 items-start">
+                    <span
+                      className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                        done ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'
+                      }`}
+                      aria-hidden
+                    >
+                      {done && <Check className="w-2.5 h-2.5 text-white stroke-3" />}
+                    </span>
+                    <span
+                      className={`text-[11px] leading-snug ${
+                        done ? 'text-slate-500 line-through' : 'text-slate-700'
+                      }`}
+                    >
+                      <span className="font-semibold text-slate-600 tabular-nums">{i + 1}.</span> {text}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
+
+          {isPublicFeedback ? (
+            <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
+              <button
+                type="button"
+                onClick={() => setFeedbackCompleteOpen(true)}
+                className="w-full flex items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-emerald-700 transition-all"
+              >
+                Finalizar
+              </button>
+            </div>
+          ) : (
+            <div className="shrink-0 border-t border-slate-200 p-4 bg-white">
+              <button
+                type="button"
+                onClick={() => void handlePublish()}
+                disabled={isPublishing}
+                className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-all disabled:opacity-60 disabled:pointer-events-none"
+              >
+                {isPublishing ? (
+                  <>
+                    <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0" />
+                    Publicando…
+                  </>
+                ) : (
+                  'Publicar'
+                )}
+              </button>
+            </div>
+          )}
         </aside>
       </main>
 
@@ -754,7 +897,7 @@ export default function AppViewer() {
             <Info className="w-5 h-5 text-blue-400 shrink-0" />
             <div>
               <p className="text-xs font-bold mb-1">Dica de Navegação</p>
-              <p className="text-[11px] opacity-80 leading-relaxed">Dê um duplo clique em qualquer área do protótipo para abrir um marcador de feedback e registrar uma nova issue.</p>
+              <p className="text-[11px] opacity-80 leading-relaxed">Dê um duplo clique em qualquer área do protótipo para abrir um marcador de feedback e registrar uma nova observação (issue).</p>
             </div>
             <button onClick={() => setShowHint(false)} className="text-white/50 hover:text-white">
               <X className="w-4 h-4" />
@@ -771,6 +914,12 @@ export default function AppViewer() {
           setPublishSuccessOpen(false);
           navigate('/');
         }}
+      />
+
+      <FeedbackThankYouModal
+        isOpen={feedbackCompleteOpen}
+        appName={app?.name}
+        onClose={() => setFeedbackCompleteOpen(false)}
       />
     </div>
   );
